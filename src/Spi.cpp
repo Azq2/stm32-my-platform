@@ -72,7 +72,14 @@ void Spi::configure() {
 	}
 	
 	m_real_speed = bus / div;
-	spi_init_master(m_config->spi, br, (m_mode & SPI_CR1_CPOL), (m_mode & SPI_CR1_CPHA), SPI_CR1_DFF_8BIT, m_data_bit_order);
+	spi_init_master(
+		m_config->spi,
+		br,
+		(m_mode & SPI_CR1_CPOL),
+		(m_mode & SPI_CR1_CPHA),
+		SPI_CR1_DFF_8BIT,
+		(m_data_bit_order == MSB_FIRST ? SPI_CR1_MSBFIRST : SPI_CR1_LSBFIRST)
+	);
 	
 	if (m_crc) {
 		spi_enable_crc(m_config->spi);
@@ -132,12 +139,12 @@ int Spi::close() {
 	return 0;
 }
 
-int Spi::transfer(void *buffer_tx, int size_tx, void *buffer_rx, int size_rx, bool wide) {
+int Spi::transfer(const void *buffer_tx, int size_tx, void *buffer_rx, int size_rx, bool wide) {
 	int total_size = size_tx > size_rx ? size_tx : size_rx;
 	if (!total_size)
 		return ERR_SUCCESS;
 	
-	TickType_t ticks_to_wait = pdMS_TO_TICKS(m_one_byte_timeout * total_size);
+	TickType_t ticks_to_wait = pdMS_TO_TICKS(ONE_BYTE_TIMEOUT * total_size);
 	
 	m_isr.error = ERR_SUCCESS;
 	m_isr.write.buffer = buffer_tx;
