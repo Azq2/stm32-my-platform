@@ -105,12 +105,12 @@ int Nrf24::reset() {
 		return ret;
 	
 	// Reset all transmissions
-	flushTx();
-	flushRx();
-	clearIrqTxFlags();
-	clearIrqRxFlags();
+	flushAll();
 	
 	// Validate state
+	if (!isConnected())
+		return ERR_UNKNOWN;
+	
 	if (getFifoStatus() != (Hw::FIFO_STATUS_RX_EMPTY | Hw::FIFO_STATUS_TX_EMPTY))
 		return ERR_UNKNOWN;
 	
@@ -123,27 +123,136 @@ int Nrf24::reset() {
 	return ERR_SUCCESS;
 }
 
-int Nrf24::write(const void *buffer, uint8_t size, bool no_ack, uint32_t timeout_ms) {
-	writeTxPayload(buffer, size, no_ack);
+Nrf24::OperationMode Nrf24::getOperationMode() {
+	if (isPowerUp()) {
+		if (getMode() == MODE_RX) {
+			return isChipEnabled() ? IN_RX_MODE : IN_STANDBY;
+		} else {
+			return IN_TX_MODE;
+		}
+	} else {
+		return IN_POWER_DOWN;
+	}
+}
+
+void Nrf24::startRx() {
+	OperationMode mode = getOperationMode();
+	if (mode == IN_RX_MODE)
+		return;
+	
+	setMode(MODE_RX);
+	if (mode == IN_POWER_DOWN)
+		setPowerUp(true);
+	flushAll();
 	
 	enable();
-	uint8_t status = waitForIrqFlags(Hw::STATUS_TX_DS | Hw::STATUS_MAX_RT, timeout_ms);
+}
+
+void Nrf24::startTx() {
 	disable();
 	
+	OperationMode mode = getOperationMode();
+	if (mode == IN_TX_MODE)
+		return;
+	
+	setMode(MODE_TX);
+	if (mode == IN_POWER_DOWN)
+		setPowerUp(true);
+	flushAll();
+}
+
+void Nrf24::stop() {
+	disable();
+	setMode(MODE_TX);
+	flushAll();
+	setPowerUp(false);
+}
+
+void Nrf24::flushAll() {
+	flushRx();
+	flushTx();
+	clearIrqFlags(Hw::STATUS_RX_DR);
+	clearIrqFlags(Hw::STATUS_TX_DS | Hw::STATUS_MAX_RT);
+}
+
+int Nrf24::write(const void *buffer, uint8_t size, bool no_ack, int retries) {
+	writeTxPayload(buffer, size, no_ack);
+	enable();
+	int ret = writeFinish(retries);
+	disable();
+	return ret;
+}
+
+int Nrf24::_writeFinish(int &retries) {
+	uint8_t status = waitForIrqFlags(Hw::STATUS_TX_DS | Hw::STATUS_MAX_RT, DEFAULT_WRITE_TIMEOUT);
+	
+	// Timeout after ARD * ARC (when no_ack=0)
+	if ((status & Hw::STATUS_MAX_RT)) {
+		if (retries > 0) {
+			// Start new transmit with previous payload
+			clearIrqFlags(Hw::STATUS_MAX_RT);
+			reuseTxPayload();
+			disable();
+			enable();
+			retries--;
+			return ERR_AGAIN;
+		} else {
+			// Not enought retries, stop
+			clearIrqFlags(Hw::STATUS_TX_DS | Hw::STATUS_MAX_RT);
+			flushTx();
+			disable();
+			return ERR_TIMEOUT;
+		}
+	}
+	
+	// Successful transmit
 	if ((status & Hw::STATUS_TX_DS)) {
-		clearIrqTxFlags();
+		clearIrqFlags(Hw::STATUS_TX_DS);
 		return ERR_SUCCESS;
 	}
 	
-	flushTx();
-	clearIrqTxFlags();
-	
-	// Timeout after ARD * ARC
-	if ((status & Hw::STATUS_MAX_RT))
-		return ERR_TIMEOUT;
+	flushAll();
+	disable();
 	
 	// Unknown error, may be chip fault and soft reset needed
 	return ERR_UNKNOWN;
+}
+
+int Nrf24::streamWrite(const void *buffer, uint8_t size, bool no_ack) {
+	int retries = m_stream_retries;
+	
+	// Wait for last transmit done if TX fifo is full
+	if ((getStatus() & (Hw::STATUS_TX_FULL | Hw::STATUS_MAX_RT))) {
+		int ret = writeFinish(retries);
+		if (ret < 0)
+			return ret;
+	}
+	
+	// Add message to FIFO
+	writeTxPayload(buffer, size, no_ack);
+	
+	// Start transmit
+	enable();
+	
+	return ERR_SUCCESS;
+}
+
+int Nrf24::streamWriteFinish() {
+	int retries = m_stream_retries;
+	
+	for (int i = 0; i < TX_FIFO_COUNT; i++) {
+		// Wait for empty TX fifo
+		 if ((getFifoStatus() & Hw::FIFO_STATUS_TX_EMPTY))
+			break;
+		 
+		// Wait for transfer done
+		int ret = writeFinish(retries);
+		if (ret < 0)
+			return ret;
+	}
+	
+	disable();
+	return ERR_SUCCESS;
 }
 
 bool Nrf24::waitForPacket(uint32_t timeout_ms) {
@@ -166,9 +275,9 @@ int Nrf24::read(void *buffer, uint8_t *out_pipe, uint8_t max_size) {
 		// We received noise, clear IRQ and RX FIFO
 		if (hasPacket()) {
 			flushRx();
-			clearIrqRxFlags();
+			clearIrqFlags(Hw::STATUS_RX_DR);
 		}
-		return ERR_FIFO_EMPTY;
+		return 0;
 	}
 	
 	if (out_pipe)
@@ -176,7 +285,7 @@ int Nrf24::read(void *buffer, uint8_t *out_pipe, uint8_t max_size) {
 	
 	uint8_t read_size = max_size < payload_size ? max_size : payload_size;
 	readRxPayload(buffer, read_size);
-	clearIrqRxFlags();
+	clearIrqFlags(Hw::STATUS_RX_DR);
 	
 	return read_size;
 }

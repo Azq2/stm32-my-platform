@@ -9,11 +9,10 @@
 
 class Nrf24 {
 	public:
-		static constexpr uint32_t TPD2STBY				= 150;
-		
 		// Minimum timeout: MAX_ARD (4000us) * MAX_ARC (15) = 60 ms
-		// But make it with little margin, for worth case (eg. RTOS lags).
-		static constexpr uint32_t DEFAULT_WRITE_TIMEOUT	= 150;
+		static constexpr uint32_t DEFAULT_WRITE_TIMEOUT	= 60;
+		static constexpr uint8_t RX_FIFO_COUNT = 3;
+		static constexpr uint8_t TX_FIFO_COUNT = 3;
 		
 		// NRF24 hardware registers and bits
 		struct Hw {
@@ -225,12 +224,19 @@ class Nrf24 {
 			MODE_RX	= 1,
 		};
 		
+		enum OperationMode {
+			IN_POWER_DOWN	= 0,
+			IN_STANDBY		= 1,
+			IN_TX_MODE		= 2,
+			IN_RX_MODE		= 3
+		};
+		
 		enum Errors {
 			ERR_SUCCESS			= 0,
-			ERR_FIFO_EMPTY		= ERR_SUCCESS,
 			ERR_UNKNOWN			= -1,
 			ERR_INVALID_ARGS	= -2,
-			ERR_TIMEOUT			= -3
+			ERR_TIMEOUT			= -3,
+			ERR_AGAIN			= -4
 		};
 		
 		struct Pin {
@@ -252,12 +258,22 @@ class Nrf24 {
 		
 		Pinout m_pins;
 		int m_cs_level = 0;
+		int m_stream_retries = 0;
 		
 		SemaphoreHandle_t m_irq_sem = nullptr;
 		
 		Nrf24 &operator=(const Nrf24 &);
 		Nrf24(const Nrf24 &);
 		
+		int _writeFinish(int &retries);
+		
+		inline int writeFinish(int &retries) {
+			int ret;
+			do {
+				ret = _writeFinish(retries);
+			} while (ret == ERR_AGAIN);
+			return ret;
+		}
 	public:
 		explicit Nrf24(Spi *spi, const Pinout &pins);
 		
@@ -281,16 +297,61 @@ class Nrf24 {
 			ce(true);
 		}
 		
+		inline bool isChipEnabled() {
+			bool value = gpio_get(m_pins.ce.bank, m_pins.ce.pin) != 0;
+			return value != m_pins.ce.negative;
+		}
+		
 		void begin();
 		void end();
 		
-		// TX
-		int write(const void *buffer, uint8_t size, bool no_ack = false, uint32_t timeout_ms = DEFAULT_WRITE_TIMEOUT);
+		/* TX functions */
+		// Sync write one packet and wait for transmission done
+		int write(const void *buffer, uint8_t size, bool no_ack = false, int retries = 0);
 		
-		// RX
+		// Async write one packet without waiting for transmission done
+		// But in case when TX FIFO is full it waits for ends of last transmission
+		int streamWrite(const void *buffer, uint8_t size, bool no_ack);
+		
+		// Waiting for EMPTY TX FIFO (when all transmissions are done)
+		int streamWriteFinish();
+		
+		// Start TX mode
+		void startTx();
+		
+		// Reuse payload from last transmission
+		inline void reuseTxPayload() {
+			cmdW(Hw::CMD_REUSE_TX_P);
+		}
+		
+		// Set additional retries for streamWrite()
+		// Total retries = ARC * retries
+		// Default 0 retries
+		inline void setStreamRetries(int retries) {
+			m_stream_retries = retries;
+		}
+		
+		/* RX functions */
+		// Wait for new packet in RX FIFO
 		bool waitForPacket(uint32_t timeout_ms);
+		
+		// True if RX FIFO has packet
 		bool hasPacket();
+		
+		// Read received packet from RX FIFO
 		int read(void *buffer, uint8_t *pipe = nullptr, uint8_t max_size = 32);
+		
+		// Start RX mode
+		void startRx();
+		
+		// Stop RX or TX
+		void stop();
+		
+		// flush all fifos and irq
+		void flushAll();
+		
+		// Operation mode
+		OperationMode getOperationMode();
 		
 		// Power up
 		inline void setPowerUp(bool enable) {
@@ -321,12 +382,12 @@ class Nrf24 {
 		
 		// Channel
 		inline void setChannel(uint8_t channel) {
-			configASSERT(channel <= 127);
+			configASSERT(channel <= 125);
 			writeRegister(Hw::REG_RF_CH, channel);
 		}
 		
 		inline void setFrequency(uint8_t freq) {
-			configASSERT(freq >= 2400 && freq <= 2527);
+			configASSERT(freq >= 2400 && freq <= 2525);
 			writeRegister(Hw::REG_RF_CH, freq - 2400);
 		}
 		
@@ -503,12 +564,8 @@ class Nrf24 {
 		}
 		
 		// Irq
-		inline void clearIrqTxFlags() {
-			updateRegister(Hw::REG_STATUS, 0, Hw::STATUS_MAX_RT | Hw::STATUS_TX_DS);
-		}
-		
-		inline void clearIrqRxFlags() {
-			updateRegister(Hw::REG_STATUS, 0, Hw::STATUS_RX_DR);
+		inline void clearIrqFlags(uint8_t flags) {
+			updateRegister(Hw::REG_STATUS, 0, flags);
 		}
 		
 		inline void maskIrq(IrqMask mask) {
