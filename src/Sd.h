@@ -92,23 +92,23 @@ class Sd {
 			CARD_SDHC		= 1
 		};
 		
-		enum {
+		enum: uint32_t {
 			OCR_VOLTAGE_MASK		= 0x1FFFFF0,
 			OCR_VOLTAGE_SHIFT		= 4,
 			
-			OCR_VOLTAGE_2V7_2V8		= 1 << 15,
-			OCR_VOLTAGE_2V8_2V9		= 1 << 16,
-			OCR_VOLTAGE_2V9_3V0		= 1 << 17,
-			OCR_VOLTAGE_3V0_3V1		= 1 << 18,
-			OCR_VOLTAGE_3V1_3V2		= 1 << 19,
-			OCR_VOLTAGE_3V2_3V3		= 1 << 20,
-			OCR_VOLTAGE_3V3_3V4		= 1 << 21,
-			OCR_VOLTAGE_3V4_3V5		= 1 << 22,
-			OCR_VOLTAGE_3V5_3V6		= 1 << 23,
-			OCR_S18R				= 1 << 24,
+			OCR_VOLTAGE_2V7_2V8		= 1U << 15,
+			OCR_VOLTAGE_2V8_2V9		= 1U << 16,
+			OCR_VOLTAGE_2V9_3V0		= 1U << 17,
+			OCR_VOLTAGE_3V0_3V1		= 1U << 18,
+			OCR_VOLTAGE_3V1_3V2		= 1U << 19,
+			OCR_VOLTAGE_3V2_3V3		= 1U << 20,
+			OCR_VOLTAGE_3V3_3V4		= 1U << 21,
+			OCR_VOLTAGE_3V4_3V5		= 1U << 22,
+			OCR_VOLTAGE_3V5_3V6		= 1U << 23,
+			OCR_S18R				= 1U << 24,
 			OCR_S18A				= OCR_S18R,
-			OCR_HCS					= 1 << 30,
-			OCR_NOT_BUSY			= 1 << 31
+			OCR_HCS					= 1U << 30,
+			OCR_NOT_BUSY			= 1U << 31
 		};
 		
 		enum {
@@ -167,30 +167,30 @@ class Sd {
 			CMD_SD_SEND_OP_COND			= 41
 		};
 		
-		enum {
-			R1_AKE_SEQ_ERROR		= 1 << 3,	// ER
-			R1_APP_CMD				= 1 << 5,	// SR
-			R1_FX_EVENT				= 1 << 6,	// SX
-			R1_READY_FOR_DATA		= 1 << 8,	// SX
-			R1_ERASE_RESET			= 1 << 13,	// SR
-			R1_CARD_ECC_DISABLED	= 1 << 14,	// SX
-			R1_WP_ERASE_SKIP		= 1 << 15,	// ERX
-			R1_CSD_OVERWRITE		= 1 << 16,	// ERX
-			R1_UNDERRUN				= 1 << 17,	// EX
-			R1_OVERRUN				= 1 << 17,	// EX
-			R1_ERROR				= 1 << 19,	// ERX
-			R1_CC_ERROR				= 1 << 20,	// ERX
-			R1_CARD_ECC_FAILED		= 1 << 21,	// ERX
-			R1_ILLEGAL_COMMAND		= 1 << 22,	// ER
-			R1_COM_CRC_ERROR		= 1 << 23,	// ER
-			R1_LOCK_UNLOCK_FAILED	= 1 << 24,	// ERX
-			R1_CARD_IS_LOCKED		= 1 << 25,	// SX
-			R1_WP_VIOLATION			= 1 << 26,	// ERX
-			R1_ERASE_PARAM			= 1 << 27,	// ERX
-			R1_ERASE_SEQ_ERROR		= 1 << 28,	// ER
-			R1_BLOCK_LEN_ERROR		= 1 << 29,	// ERX
-			R1_ADDRESS_ERROR		= 1 << 30,	// ERX
-			R1_OUT_OF_RANGE			= 1 << 31,	// ERX
+		enum: uint32_t {
+			R1_AKE_SEQ_ERROR		= 1U << 3,	// ER
+			R1_APP_CMD				= 1U << 5,	// SR
+			R1_FX_EVENT				= 1U << 6,	// SX
+			R1_READY_FOR_DATA		= 1U << 8,	// SX
+			R1_ERASE_RESET			= 1U << 13,	// SR
+			R1_CARD_ECC_DISABLED	= 1U << 14,	// SX
+			R1_WP_ERASE_SKIP		= 1U << 15,	// ERX
+			R1_CSD_OVERWRITE		= 1U << 16,	// ERX
+			R1_UNDERRUN				= 1U << 17,	// EX
+			R1_OVERRUN				= 1U << 17,	// EX
+			R1_ERROR				= 1U << 19,	// ERX
+			R1_CC_ERROR				= 1U << 20,	// ERX
+			R1_CARD_ECC_FAILED		= 1U << 21,	// ERX
+			R1_ILLEGAL_COMMAND		= 1U << 22,	// ER
+			R1_COM_CRC_ERROR		= 1U << 23,	// ER
+			R1_LOCK_UNLOCK_FAILED	= 1U << 24,	// ERX
+			R1_CARD_IS_LOCKED		= 1U << 25,	// SX
+			R1_WP_VIOLATION			= 1U << 26,	// ERX
+			R1_ERASE_PARAM			= 1U << 27,	// ERX
+			R1_ERASE_SEQ_ERROR		= 1U << 28,	// ER
+			R1_BLOCK_LEN_ERROR		= 1U << 29,	// ERX
+			R1_ADDRESS_ERROR		= 1U << 30,	// ERX
+			R1_OUT_OF_RANGE			= 1U << 31,	// ERX
 			
 			R1_ALL_ERRORS			= (
 				R1_AKE_SEQ_ERROR | R1_WP_ERASE_SKIP | R1_CSD_OVERWRITE |
@@ -326,17 +326,18 @@ class Sd {
 		Sd(const Sd &);
 		
 		void initSdio();
-		uint8_t toClockDiv(uint32_t freq);
 		void setClock(bool enable, uint8_t div, Sdio::BusWidth bus_width);
-		uint32_t getSdioClk();
+		
+		static uint32_t getSdioClk();
+		static uint8_t toClockDiv(uint32_t freq);
 		
 		int sendCommand(uint8_t index, uint32_t arg, uint32_t flags = 0, uint32_t timeout_ms = 5000);
 		
 		int checkVoltageRange();
 		
-		bool decodeCid(const uint32_t *response, Cid *cid);
-		bool decodeCsd(const uint32_t *response, Csd *csd);
-		bool decodeScr(const uint32_t *response, Scr *scr);
+		static bool decodeCid(const uint32_t *response, Cid *cid);
+		static bool decodeCsd(const uint32_t *response, Csd *csd);
+		static bool decodeScr(const uint32_t *response, Scr *scr);
 		
 		int cmdAppSendOpCond();
 		int cmdSendIfCond(uint8_t voltage, uint8_t pattern);
@@ -358,7 +359,7 @@ class Sd {
 		
 		void writeFifoFromISR(uint32_t status);
 		
-		constexpr uint32_t getBits(const uint32_t *response, uint32_t bits, uint32_t start, uint32_t size) {
+		constexpr static uint32_t getBits(const uint32_t *response, uint32_t bits, uint32_t start, uint32_t size) {
 			uint32_t offset = (bits / 32) - (start / 32) - 1;
 			uint32_t shift = start & 31;
 			uint32_t value = (response[offset] >> shift);
@@ -368,7 +369,7 @@ class Sd {
 			return value & ((1llu << size) - 1);
 		}
 		
-		constexpr uint32_t getBitsBE(const uint32_t *response, uint32_t bits, uint32_t start, uint32_t size) {
+		constexpr static uint32_t getBitsBE(const uint32_t *response, uint32_t bits, uint32_t start, uint32_t size) {
 			uint32_t offset = (bits / 32) - (start / 32) - 1;
 			uint32_t shift = start & 31;
 			uint32_t value = (__builtin_bswap32(response[offset]) >> shift);

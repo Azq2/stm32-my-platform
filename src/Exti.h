@@ -16,17 +16,18 @@ class Exti {
 			BOTH		= EXTI_TRIGGER_BOTH
 		};
 		
-		typedef void (Callback)(bool state);
+		typedef void (Callback)(bool state, void *data);
 	protected:
 		
 		static constexpr int EXTI_COUNT = 16;
 		
-		static constexpr uint32_t id2exti(int hub_id) {
-			return 1 << hub_id;
+		static constexpr uint32_t id2exti(int id) {
+			return 1 << id;
 		}
 		
 		struct Channel {
 			Callback *callback = nullptr;
+			void *user_data = nullptr;
 			uint32_t bank = 0;
 		};
 		
@@ -80,13 +81,13 @@ class Exti {
 			ERR_EXISTS		= -1,
 		};
 		
-		static void handleIrq(uint8_t hub_id);
+		static void handleIrq(uint8_t id);
 		static inline void handleIrqRange(uint8_t from, uint8_t to) {
 			for (uint8_t i = from; i <= to; i++) {
 				if (exti_get_flag_status(id2exti(i)))
 					Exti::handleIrq(i);
 			}
 		};
-		static int set(uint32_t bank, uint32_t pin, Trigger trigger, Callback *callback);
+		static int set(uint32_t bank, uint32_t pin, Trigger trigger, Callback *callback, void *user_data = nullptr);
 		static int remove(uint32_t bank, uint32_t pin);
 };

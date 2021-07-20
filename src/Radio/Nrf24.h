@@ -2,8 +2,19 @@
 
 #include "../Spi.h"
 
+#include <libopencm3/stm32/gpio.h>
+
+#include <FreeRTOS.h>
+#include <semphr.h>
+
 class Nrf24 {
 	public:
+		static constexpr uint32_t TPD2STBY				= 150;
+		
+		// Minimum timeout: MAX_ARD (4000us) * MAX_ARC (15) = 60 ms
+		// But make it with little margin, for worth case (eg. RTOS lags).
+		static constexpr uint32_t DEFAULT_WRITE_TIMEOUT	= 150;
+		
 		// NRF24 hardware registers and bits
 		struct Hw {
 			enum Cmd: uint8_t {
@@ -128,9 +139,9 @@ class Nrf24 {
 				
 				// REG_FIFO_STATUS
 				FIFO_STATUS_RX_EMPTY		= 1 << 0,
-				FIFO_STATUS_RX_FILL			= 1 << 1,
+				FIFO_STATUS_RX_FULL			= 1 << 1,
 				FIFO_STATUS_TX_EMPTY		= 1 << 4,
-				FIFO_STATUS_TX_FILL			= 1 << 5,
+				FIFO_STATUS_TX_FULL			= 1 << 5,
 				FIFO_STATUS_TX_REUSE		= 1 << 6,
 				
 				// REG_FEATURE
@@ -138,16 +149,24 @@ class Nrf24 {
 				FEATURE_EN_ACK_PAY			= 1 << 1,
 				FEATURE_EN_DPL				= 1 << 2,
 			};
+			
+			enum Values: uint8_t {
+				// REG_SETUP_AW
+				SETUP_AW_3B		= 1,
+				SETUP_AW_4B		= 2,
+				SETUP_AW_5B		= 3,
+			};
 		};
 		
 		enum Pipe: uint8_t {
-			PIPE0	= 0,
-			PIPE1	= 1,
-			PIPE2	= 2,
-			PIPE3	= 3,
-			PIPE4	= 4,
-			PIPE5	= 5,
-			PIPETX	= 6
+			PIPE0		= 0,
+			PIPE1		= 1,
+			PIPE2		= 2,
+			PIPE3		= 3,
+			PIPE4		= 4,
+			PIPE5		= 5,
+			PIPETX		= 6,
+			NO_PIPE		= 7
 		};
 		
 		enum Features {
@@ -160,6 +179,7 @@ class Nrf24 {
 			DATA_RATE_250K		= Hw::SETUP_RF_DR_LOW,
 			DATA_RATE_1M		= 0,
 			DATA_RATE_2M		= Hw::SETUP_RF_DR_HIGH,
+			DATA_RATE_INVALID	= Hw::SETUP_RF_DR_HIGH | Hw::SETUP_RF_DR_LOW
 		};
 		
 		enum CrcMode: uint8_t {
@@ -207,195 +227,341 @@ class Nrf24 {
 		
 		enum Errors {
 			ERR_SUCCESS			= 0,
-			ERR_BUS				= -1,
+			ERR_FIFO_EMPTY		= ERR_SUCCESS,
+			ERR_UNKNOWN			= -1,
 			ERR_INVALID_ARGS	= -2,
-			ERR_UNKNOWN			= -3
+			ERR_TIMEOUT			= -3
+		};
+		
+		struct Pin {
+			uint32_t bank;
+			uint16_t pin;
+			bool negative;
+		};
+		
+		struct Pinout {
+			Pin irq;
+			Pin cs;
+			Pin ce;
 		};
 		
 		// Strange value for unlocking some features
 		static constexpr uint8_t UNLOCK_MAGIC_VALUE = 0x73;
 	protected:
-		Spi *m_spi = nullptr;
-		uint32_t m_cs_bank = 0;
-		uint32_t m_cs_pin = 0;
-		bool m_cs_negative = true;
+		Spi *m_spi;
+		
+		Pinout m_pins;
 		int m_cs_level = 0;
+		
+		SemaphoreHandle_t m_irq_sem = nullptr;
 		
 		Nrf24 &operator=(const Nrf24 &);
 		Nrf24(const Nrf24 &);
 		
 	public:
-		Nrf24(Spi *spi, uint32_t cs_bank, uint32_t cs_pin, bool cs_negative = true);
+		explicit Nrf24(Spi *spi, const Pinout &pins);
+		
+		inline bool hasIrq() {
+			bool value = gpio_get(m_pins.irq.bank, m_pins.irq.pin) != 0;
+			return value != m_pins.irq.negative;
+		}
+		
+		int open();
+		void close();
+		
 		int reset();
+		
+		void ce(bool flag);
+		
+		inline void enable() {
+			ce(true);
+		}
+		
+		inline void disable() {
+			ce(true);
+		}
 		
 		void begin();
 		void end();
 		
-		inline int getDynamicPayloadSize() {
-			return cmdR(Hw::CMD_R_RX_PL_WID);
+		// TX
+		int write(const void *buffer, uint8_t size, bool no_ack = false, uint32_t timeout_ms = DEFAULT_WRITE_TIMEOUT);
+		
+		// RX
+		bool waitForPacket(uint32_t timeout_ms);
+		bool hasPacket();
+		int read(void *buffer, uint8_t *pipe = nullptr, uint8_t max_size = 32);
+		
+		// Power up
+		inline void setPowerUp(bool enable) {
+			updateRegister(Hw::REG_CONFIG, Hw::CONFIG_PWR_UP, (enable ? Hw::CONFIG_PWR_UP : 0));
 		}
 		
-		inline int setPowerUp(bool enable) {
-			return updateRegister(Hw::REG_CONFIG, Hw::CONFIG_PWR_UP, (enable ? Hw::CONFIG_PWR_UP : 0));
+		inline bool isPowerUp() {
+			return readRegisterMask(Hw::REG_CONFIG, Hw::CONFIG_PWR_UP, 0) != 0;
 		}
 		
-		inline int setMode(Mode mode) {
-			return updateRegister(Hw::REG_CONFIG, Hw::CONFIG_PRIM_RX, (mode == MODE_RX ? Hw::CONFIG_PRIM_RX : 0));
+		// Mode
+		inline void setMode(Mode mode) {
+			updateRegister(Hw::REG_CONFIG, Hw::CONFIG_PRIM_RX, (mode == MODE_RX ? Hw::CONFIG_PRIM_RX : 0));
 		}
 		
-		inline int setCrcMode(CrcMode crc) {
-			return updateRegister(Hw::REG_CONFIG, Hw::CONFIG_CRC_MASK, crc);
+		inline Mode getMode() {
+			return readRegisterMask(Hw::REG_CONFIG, Hw::CONFIG_PRIM_RX, 0) ? MODE_RX : MODE_TX;
 		}
 		
-		inline int setChannel(uint8_t channel) {
-			return writeRegister(Hw::REG_RF_CH, channel);
+		// CRC
+		inline void setCrcMode(CrcMode crc) {
+			updateRegister(Hw::REG_CONFIG, Hw::CONFIG_CRC_MASK, crc);
 		}
 		
-		inline int setAutoRetransmit(uint8_t ard, uint8_t arc) {
-			return updateRegister(Hw::REG_SETUP_RETR, Hw::SETUP_RETR_ARC_MASK | Hw::SETUP_RETR_ARD_MASK,
+		inline CrcMode getCrcMode() {
+			return (CrcMode) readRegisterMask(Hw::REG_CONFIG, Hw::CONFIG_CRC_MASK, 0);
+		}
+		
+		// Channel
+		inline void setChannel(uint8_t channel) {
+			configASSERT(channel <= 127);
+			writeRegister(Hw::REG_RF_CH, channel);
+		}
+		
+		inline void setFrequency(uint8_t freq) {
+			configASSERT(freq >= 2400 && freq <= 2527);
+			writeRegister(Hw::REG_RF_CH, freq - 2400);
+		}
+		
+		inline uint8_t getChannel() {
+			return readRegister(Hw::REG_RF_CH);
+		}
+		
+		inline uint8_t getFrequency() {
+			return 2400 + readRegister(Hw::REG_RF_CH);
+		}
+		
+		// Auto retransmit
+		inline void setAutoRetransmit(uint8_t ard, uint8_t arc) {
+			configASSERT(arc <= 15);
+			updateRegister(Hw::REG_SETUP_RETR, Hw::SETUP_RETR_ARC_MASK | Hw::SETUP_RETR_ARD_MASK,
 				(ard << Hw::SETUP_RETR_ARD_SHIFT) | (arc << Hw::SETUP_RETR_ARC_SHIFT));
 		}
 		
-		inline int setAddrWidth(uint8_t width) {
-			if (width < 3 || width > 5)
-				return ERR_INVALID_ARGS;
-			return writeRegister(Hw::REG_SETUP_AW, width - 2);
+		inline uint8_t getAutoRetransmitRetr() {
+			return readRegisterMask(Hw::REG_SETUP_RETR, Hw::SETUP_RETR_ARD_MASK, Hw::SETUP_RETR_ARD_SHIFT);
 		}
 		
-		inline int getAddrWidth() {
-			int ret = readRegister(Hw::REG_SETUP_AW);
-			return ret < 0 ? ret : ret + 2;
+		inline uint8_t getAutoRetransmitCount() {
+			return readRegisterMask(Hw::REG_SETUP_RETR, Hw::SETUP_RETR_ARC_MASK, Hw::SETUP_RETR_ARC_SHIFT);
 		}
 		
-		int setAddr(uint8_t pipe, const uint8_t *addr, uint8_t length);
-		
-		inline int setTxPower(TxPower power) {
-			return updateRegister(Hw::REG_RF_SETUP, Hw::SETUP_RF_PWR_MASK, power << Hw::SETUP_RF_PWR_SHIFT);
+		// Address width
+		inline void setAddrWidth(uint8_t width) {
+			configASSERT(width >= 3 && width <= 5);
+			writeRegister(Hw::REG_SETUP_AW, width - 2);
 		}
 		
-		inline int enableLna(bool enable) {
-			return updateRegister(Hw::REG_RF_SETUP, Hw::SETUP_RF_LNA_HCURR, (enable ? Hw::SETUP_RF_LNA_HCURR : 0));
+		inline uint8_t getAddrWidth() {
+			return readRegister(Hw::REG_SETUP_AW) + 2;
 		}
 		
-		inline int setDataRate(DataRate dr) {
-			return updateRegister(Hw::REG_RF_SETUP, Hw::SETUP_RF_DR_HIGH | Hw::SETUP_RF_DR_LOW, dr);
+		// Address
+		int setAddr(uint8_t pipe, uint64_t addr);
+		uint64_t getAddr(uint8_t pipe);
+		
+		// Tx power
+		inline void setTxPower(TxPower power) {
+			updateRegister(Hw::REG_RF_SETUP, Hw::SETUP_RF_PWR_MASK, power << Hw::SETUP_RF_PWR_SHIFT);
 		}
 		
-		inline int enableRxPipe(uint8_t pipe, bool enable) {
-			if (pipe > 5)
-				return ERR_INVALID_ARGS;
-			return updateRegister(Hw::REG_EN_RXADDR, (1 << pipe), (enable ? 1 << pipe : 0));
+		inline TxPower getTxPower() {
+			return (TxPower) readRegisterMask(Hw::REG_RF_SETUP, Hw::SETUP_RF_PWR_MASK, Hw::SETUP_RF_PWR_SHIFT);
 		}
 		
-		inline int enableAA(uint8_t pipe, bool enable) {
-			if (pipe > 5)
-				return ERR_INVALID_ARGS;
-			return updateRegister(Hw::REG_EN_AA, (1 << pipe), (enable ? 1 << pipe : 0));
+		// LNA
+		inline void enableLna(bool enable) {
+			updateRegister(Hw::REG_RF_SETUP, Hw::SETUP_RF_LNA_HCURR, (enable ? Hw::SETUP_RF_LNA_HCURR : 0));
 		}
 		
-		inline int setPayloadSize(uint8_t pipe, uint8_t size) {
-			if (pipe > 5 || size > 32)
-				return ERR_INVALID_ARGS;
-			return writeRegister(Hw::REG_RX_PW_P0 + pipe, size);
+		inline bool isLnaEnabled() {
+			return readRegisterMask(Hw::REG_RF_SETUP, Hw::SETUP_RF_LNA_HCURR, 0) != 0;
 		}
 		
-		inline int getPayloadSize(uint8_t pipe) {
-			if (pipe > 5 )
-				return ERR_INVALID_ARGS;
-			int ret = readRegister(Hw::REG_RX_PW_P0 + pipe);
-			if (ret > 32)
-				return ERR_UNKNOWN;
-			return ret;
+		// Data rate
+		inline void setDataRate(DataRate dr) {
+			updateRegister(Hw::REG_RF_SETUP, Hw::SETUP_RF_DR_HIGH | Hw::SETUP_RF_DR_LOW, dr);
 		}
 		
-		inline int getStatus() {
+		inline DataRate getDataRate() {
+			return (DataRate) readRegisterMask(Hw::REG_RF_SETUP, Hw::SETUP_RF_DR_HIGH | Hw::SETUP_RF_DR_LOW, 0);
+		}
+		
+		// Rx pipe enabling
+		inline void enableRxPipe(uint8_t pipe, bool enable) {
+			configASSERT(pipe < 6);
+			updateRegister(Hw::REG_EN_RXADDR, (1 << pipe), (enable ? 1 << pipe : 0));
+		}
+		
+		inline bool isRxPipeEnabled(uint8_t pipe) {
+			configASSERT(pipe < 6);
+			return readRegisterMask(Hw::REG_EN_RXADDR, (1 << pipe), 0) != 0;
+		}
+		
+		// Auto Ack
+		inline void enableAutoAck(uint8_t pipe, bool enable) {
+			configASSERT(pipe < 6);
+			updateRegister(Hw::REG_EN_AA, (1 << pipe), (enable ? 1 << pipe : 0));
+		}
+		
+		inline bool isAutoAckEnabled(uint8_t pipe) {
+			configASSERT(pipe < 6);
+			return readRegisterMask(Hw::REG_EN_AA, (1 << pipe), 0) != 0;
+		}
+		
+		// Dynamic Payload
+		inline void enableDynamicPayload(uint8_t pipe, bool enable) {
+			configASSERT(pipe < 6);
+			return updateRegister(Hw::REG_DYNPD, (1 << pipe), (enable ? 1 << pipe : 0));
+		}
+		
+		inline bool isDynamicPayloadEnabled(uint8_t pipe) {
+			configASSERT(pipe < 6);
+			return readRegisterMask(Hw::REG_DYNPD, (1 << pipe), 0) != 0;
+		}
+		
+		inline void setPayloadSize(uint8_t pipe, uint8_t size) {
+			configASSERT(pipe < 6);
+			writeRegister(Hw::REG_RX_PW_P0 + pipe, size);
+		}
+		
+		inline uint8_t getPayloadSize(uint8_t pipe) {
+			configASSERT(pipe < 6);
+			return readRegister(Hw::REG_RX_PW_P0 + pipe);
+		}
+		
+		inline uint8_t getDynamicPayloadSize() {
+			return cmdR(Hw::CMD_R_RX_PL_WID);
+		}
+		
+		// Status
+		inline uint8_t getStatus() {
 			return readRegister(Hw::REG_STATUS);
 		}
 		
-		inline int getFifoStatus() {
+		inline uint8_t getFifoStatus() {
 			return readRegister(Hw::REG_FIFO_STATUS);
 		}
 		
-		inline int getRxPipe() {
-			return readRegisterMask(Hw::REG_FIFO_STATUS, Hw::STATUS_RX_P_NO_MASK, Hw::STATUS_RX_P_NO_SHFIT);
+		inline uint8_t getRxPipe() {
+			return readRegisterMask(Hw::REG_STATUS, Hw::STATUS_RX_P_NO_MASK, Hw::STATUS_RX_P_NO_SHFIT);
 		}
 		
-		inline int getPlos() {
+		inline bool isConnected() {
+			// TODO: more better way...
+			uint8_t addr_width = getAddrWidth();
+			return addr_width >= 3 && addr_width <= 5;
+		}
+		
+		// Statistic
+		inline uint8_t getStatPacketLoss() {
 			return readRegisterMask(Hw::REG_OBSERVE_TX, Hw::OBSERVE_TX_PLOS_CNT_MASK, Hw::OBSERVE_TX_PLOS_CNT_SHIFT);
 		}
 		
-		inline int getArc() {
+		inline uint8_t getStatRetrCount() {
 			return readRegisterMask(Hw::REG_OBSERVE_TX, Hw::OBSERVE_TX_ARC_CNT_MASK, Hw::OBSERVE_TX_ARC_CNT_SHIFT);
 		}
 		
-		inline int getRpd() {
-			return readRegister(Hw::REG_RPD);
-		}
-		
-		inline int writeTxPayload(uint8_t *buffer, uint8_t length) {
-			return writeRegister(Hw::CMD_W_TX_PAYLOAD, buffer, length);
-		}
-		
-		inline int readRxPayload(uint8_t *buffer, uint8_t length) {
-			return readRegister(Hw::CMD_R_RX_PAYLOAD, buffer, length);
-		}
-		
-		inline int setFeatures(Features features) {
-			return updateRegister(Hw::REG_FEATURE, FEATURE_ACK_PAY | FEATURE_DPL | FEATURE_DYN_ACK, features);
-		}
-		
-		inline int flushTx() {
-			return cmdW(Hw::CMD_FLUSH_TX);
-		}
-		
-		inline int flushRx() {
-			return cmdW(Hw::CMD_FLUSH_RX);
-		}
-		
-		inline int clearIrqFlags() {
-			return updateRegister(Hw::REG_STATUS, 0, Hw::STATUS_MAX_RT | Hw::STATUS_TX_DS | Hw::STATUS_RX_DR);
-		}
-		
-		inline int clearPlos() {
+		inline void clearStatPacketLoss() {
 			// Dummy write to REG_RF_CH reseting PLOS counter
-			return updateRegister(Hw::REG_RF_CH, 0, 0);
+			updateRegister(Hw::REG_RF_CH, 0, 0);
 		}
+		
+		// RPD (Received Power Detector)
+		inline bool getRpd() {
+			return readRegister(Hw::REG_RPD) != 0;
+		}
+		
+		// Payload
+		inline void writeTxPayload(const void *buffer, uint8_t length, bool no_ack = false) {
+			writeRegister(no_ack ? Hw::CMD_W_TX_PAYLOAD_NOACK : Hw::CMD_W_TX_PAYLOAD, buffer, length);
+		}
+		
+		inline void readRxPayload(void *buffer, uint8_t length) {
+			readRegister(Hw::CMD_R_RX_PAYLOAD, buffer, length);
+		}
+		
+		// Features
+		inline void setFeatures(Features features) {
+			updateRegister(Hw::REG_FEATURE, FEATURE_ACK_PAY | FEATURE_DPL | FEATURE_DYN_ACK, features);
+		}
+		
+		// FIFO management
+		inline void flushTx() {
+			cmdW(Hw::CMD_FLUSH_TX);
+		}
+		
+		inline void flushRx() {
+			cmdW(Hw::CMD_FLUSH_RX);
+		}
+		
+		// Irq
+		inline void clearIrqTxFlags() {
+			updateRegister(Hw::REG_STATUS, 0, Hw::STATUS_MAX_RT | Hw::STATUS_TX_DS);
+		}
+		
+		inline void clearIrqRxFlags() {
+			updateRegister(Hw::REG_STATUS, 0, Hw::STATUS_RX_DR);
+		}
+		
+		inline void maskIrq(IrqMask mask) {
+			updateRegister(Hw::REG_CONFIG, mask, mask);
+		}
+		
+		inline void unmaskIrq(IrqMask mask) {
+			updateRegister(Hw::REG_CONFIG, mask, 0);
+		}
+		
+		inline IrqMask getIrqMask() {
+			return (IrqMask) readRegisterMask(Hw::REG_CONFIG, Hw::CONFIG_IRQ_MASK, 0);
+		}
+		
+		uint8_t waitForIrqFlags(uint8_t flags, uint32_t timeout_ms);
 		
 		// Commands
-		int cmdR(uint8_t reg, uint8_t *value, int length);
+		void cmdR(uint8_t reg, void *value, int length);
 		
-		inline int cmdR(uint8_t reg) {
+		inline uint8_t cmdR(uint8_t reg) {
 			uint8_t value;
-			int ret = cmdR(reg, &value, 1);
-			return ret < 0 ? ret : value;
+			cmdR(reg, &value, 1);
+			return value;
 		}
 		
-		int cmdW(uint8_t reg, const uint8_t *value = nullptr, int length = 1);
+		void cmdW(uint8_t reg, const void *value = nullptr, int length = 1);
 		
-		inline int cmdW(uint8_t reg, uint8_t value) {
-			return cmdW(reg, &value, 1);
+		inline void cmdW(uint8_t reg, uint8_t value) {
+			cmdW(reg, &value, 1);
 		}
 		
 		// Registers
-		int updateRegister(uint8_t reg, uint8_t clear_bits, uint8_t set_bits);
+		void updateRegister(uint8_t reg, uint8_t clear_bits, uint8_t set_bits);
 		
-		int readRegisterMask(uint8_t reg, uint8_t mask, uint8_t shift);
+		uint8_t readRegisterMask(uint8_t reg, uint8_t mask, uint8_t shift);
 		
-		inline int readRegister(uint8_t reg, uint8_t *value, int length) {
-			return cmdR(Hw::CMD_R_REGISTER | reg, value, length);
+		inline void readRegister(uint8_t reg, void *value, int length) {
+			cmdR(Hw::CMD_R_REGISTER | reg, value, length);
 		}
 		
-		inline int readRegister(uint8_t reg) {
+		inline uint8_t readRegister(uint8_t reg) {
 			return cmdR(Hw::CMD_R_REGISTER | reg);
 		}
 		
-		inline int writeRegister(uint8_t reg, const uint8_t *value, int length) {
-			return cmdW(Hw::CMD_W_REGISTER | reg, value, length);
+		inline void writeRegister(uint8_t reg, const void *value, int length) {
+			cmdW(Hw::CMD_W_REGISTER | reg, value, length);
 		}
 		
-		inline int writeRegister(uint8_t reg, uint8_t value) {
-			return cmdW(Hw::CMD_W_REGISTER | reg, &value, 1);
+		inline void writeRegister(uint8_t reg, uint8_t value) {
+			cmdW(Hw::CMD_W_REGISTER | reg, &value, 1);
 		}
+		
+		void handleIrq();
 		
 		void printState(int (*printf)(const char *, ... ));
 		

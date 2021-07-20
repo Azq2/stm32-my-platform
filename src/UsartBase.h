@@ -89,6 +89,6 @@ class UsartBase {
 		virtual int read(char *buffer, int size, int timeout_ms = 60000) = 0;
 		virtual int write(const char *buffer, int size, int timeout_ms = 60000) = 0;
 		
-		UsartBase(uint32_t usart);
+		explicit UsartBase(uint32_t usart);
 		virtual ~UsartBase();
 };

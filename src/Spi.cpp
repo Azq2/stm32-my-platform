@@ -31,11 +31,6 @@ void Spi::setMode(Mode mode) {
 	configure();
 }
 
-void Spi::setCrcControl(bool enable) {
-	m_crc = enable;
-	configure();
-}
-
 void Spi::setBitOrder(Spi::BitOrder order) {
 	m_data_bit_order = order;
 	configure();
@@ -80,12 +75,7 @@ void Spi::configure() {
 		SPI_CR1_DFF_8BIT,
 		(m_data_bit_order == MSB_FIRST ? SPI_CR1_MSBFIRST : SPI_CR1_LSBFIRST)
 	);
-	
-	if (m_crc) {
-		spi_enable_crc(m_config->spi);
-	} else {
-		spi_disable_crc(m_config->spi);
-	}
+	spi_disable_crc(m_config->spi);
 	
 	taskEXIT_CRITICAL();
 }
@@ -139,12 +129,10 @@ int Spi::close() {
 	return 0;
 }
 
-int Spi::transfer(const void *buffer_tx, int size_tx, void *buffer_rx, int size_rx, bool wide) {
+int Spi::transfer(const void *buffer_tx, int size_tx, void *buffer_rx, int size_rx, uint16_t default_write, bool wide) {
 	int total_size = size_tx > size_rx ? size_tx : size_rx;
 	if (!total_size)
 		return ERR_SUCCESS;
-	
-	TickType_t ticks_to_wait = pdMS_TO_TICKS(ONE_BYTE_TIMEOUT * total_size);
 	
 	m_isr.error = ERR_SUCCESS;
 	m_isr.write.buffer = buffer_tx;
@@ -153,6 +141,7 @@ int Spi::transfer(const void *buffer_tx, int size_tx, void *buffer_rx, int size_
 	m_isr.read.size = size_rx;
 	m_isr.size = total_size;
 	m_isr.wide = wide;
+	m_isr.default_write = default_write;
 	
 	if (wide) {
 		spi_set_dff_16bit(m_config->spi);
@@ -162,13 +151,11 @@ int Spi::transfer(const void *buffer_tx, int size_tx, void *buffer_rx, int size_
 	
 	SPI_CR2(m_config->spi) |= SPI_CR2_TXEIE | SPI_CR2_ERRIE;
 	
-	if (xSemaphoreTake(m_transfer_sem, ticks_to_wait))
-		return m_isr.error;
+	xSemaphoreTake(m_transfer_sem, portMAX_DELAY);
 	
-	SPI_CR2(m_config->spi) &= ~SPI_ALL_IRQ;
-	SPI_SR(m_config) &= ~SPI_ERRORS_FLAGS;
-	
-	return ERR_TIMEOUT;
+	if (m_isr.error == ERR_SUCCESS)
+		return total_size - m_isr.size;
+	return m_isr.error;
 }
 
 void Spi::handleIrq() {
@@ -176,17 +163,12 @@ void Spi::handleIrq() {
 	
 	// Errors
 	if ((SPI_CR2(m_config->spi) & SPI_CR2_ERRIE) && (SPI_SR(m_config->spi) & SPI_ERRORS_FLAGS)) {
-		if (SPI_SR(m_config->spi) & SPI_SR_OVR) {
-			m_isr.error = ERR_OVERRUN;
-		} else if (SPI_SR(m_config->spi) & SPI_SR_MODF) {
-			m_isr.error = ERR_FAULT;
-		} else if (SPI_SR(m_config->spi) & SPI_SR_CRCERR) {
-			m_isr.error = ERR_CRC_FAIL;
-		} else {
-			m_isr.error = ERR_UNKNOWN;
-		}
+		// Error in SPI Master mode is nearly impossible.
+		// Only possible error is MODF (Mode fault), but this error throws only with invalid SPI configuration.
+		// All other errors related to I2S or slave mode.
+		m_isr.error = ERR_UNKNOWN;
 		
-		SPI_SR(m_config) &= ~SPI_ERRORS_FLAGS;
+		SPI_SR(m_config->spi) &= ~SPI_ERRORS_FLAGS;
 		SPI_CR2(m_config->spi) &= ~SPI_ALL_IRQ;
 		
 		xSemaphoreGiveFromISR(m_transfer_sem, &higher_task_woken);
@@ -208,9 +190,9 @@ void Spi::handleIrq() {
 		} else {
 			// If TX buffer empty, send default write value
 			if (m_isr.wide) {
-				SPI_DR(m_config->spi) = m_default_write_value;
+				SPI_DR(m_config->spi) = m_isr.default_write;
 			} else {
-				SPI_DR(m_config->spi) = m_default_write_value & 0xFF;
+				SPI_DR(m_config->spi) = m_isr.default_write & 0xFF;
 			}
 		}
 		

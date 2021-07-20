@@ -23,7 +23,7 @@ class UsartBuffered : public UsartBase {
 		
 		bool m_continouous_read = false;
 	public:
-		UsartBuffered(uint32_t usart);
+		explicit UsartBuffered(uint32_t usart);
 		
 		void init() override;
 		void deinit() override;

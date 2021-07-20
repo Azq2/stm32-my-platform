@@ -27,7 +27,7 @@ class Usart : public UsartBase {
 		SemaphoreHandle_t m_write_sem = nullptr;
 	
 	public:
-		Usart(uint32_t usart);
+		explicit Usart(uint32_t usart);
 		~Usart();
 		
 		void handleIrq() override;

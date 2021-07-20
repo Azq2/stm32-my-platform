@@ -6,7 +6,7 @@
 
 Exti::Channel Exti::m_channels[EXTI_COUNT];
 
-int Exti::set(uint32_t bank, uint32_t pin, Trigger trigger, Callback *callback) {
+int Exti::set(uint32_t bank, uint32_t pin, Trigger trigger, Callback *callback, void *user_data) {
 	uint8_t id = Gpio::pin2id(pin);
 	uint32_t exti = id2exti(id);
 	
@@ -18,6 +18,7 @@ int Exti::set(uint32_t bank, uint32_t pin, Trigger trigger, Callback *callback) 
 	
 	m_channels[id].bank = bank;
 	m_channels[id].callback = callback;
+	m_channels[id].user_data = user_data;
 	
 	// Enable EXTI and connect to specified GPIO bank
 	exti_select_source(exti, bank);
@@ -46,6 +47,7 @@ int Exti::remove(uint32_t bank, uint32_t pin) {
 	
 	m_channels[id].bank = 0;
 	m_channels[id].callback = nullptr;
+	m_channels[id].user_data = nullptr;
 	
 	// Disconnect GPIO bank from EXTI
 	exti_select_source(exti, 0);
@@ -76,7 +78,7 @@ void Exti::handleIrq(uint8_t id) {
 	}
 	
 	exti_reset_request(exti);
-	channel.callback(state);
+	channel.callback(state, channel.user_data);
 }
 
 #ifdef STM32F4

@@ -6,6 +6,8 @@
 #include <cmath>
 #include <libopencm3/cm3/nvic.h>
 
+#include "Delay.h"
+
 static Sd *sd_instance = nullptr;
 
 Sd::Sd() {
@@ -101,15 +103,13 @@ int Sd::cmdAppSendOpCond() {
 	
 	vTaskSetTimeOutState(&timeout);
 	
-	int ret;
-	
 	uint32_t host_ocr = OCR_VOLTAGE_3V2_3V3 | OCR_VOLTAGE_3V3_3V4;
 	if (m_card_version == CARD_V2)
 		host_ocr |= OCR_HCS;
 	
 	while (true) {
 		// Enabe App command set
-		ret = sendCommand(CMD_APP_CMD, m_rca << 16, CMD_R1);
+		int ret = sendCommand(CMD_APP_CMD, m_rca << 16, CMD_R1);
 		if (ret != ERR_SUCCESS)
 			return ret;
 		
@@ -324,7 +324,7 @@ void Sd::initSdio() {
 	
 	setClock(false, toClockDiv(400000), Sdio::BUS_WIDTH_1);
 	Sdio::setPowerConfig(true);
-	vTaskDelay(pdMS_TO_TICKS(1));
+	delayMs(1);
 	setClock(true, toClockDiv(400000), Sdio::BUS_WIDTH_1);
 	
 	nvic_enable_irq(NVIC_SDIO_IRQ);
@@ -590,7 +590,7 @@ void Sd::readFifoFromISR() {
 
 void Sd::writeFifoFromISR(uint32_t status) {
 	while ((status & (SDIO_STA_TXFIFOHE | SDIO_STA_TXFIFOE))) {
-		uint32_t max_cnt = status & SDIO_STA_TXFIFOE ? (Sdio::FIFO_SIZE >> 2) : (Sdio::FIFO_HALF_SIZE >> 2);
+		uint32_t max_cnt = (status & SDIO_STA_TXFIFOE) ? (Sdio::FIFO_SIZE >> 2) : (Sdio::FIFO_HALF_SIZE >> 2);
 		uint32_t count = max_cnt > m_isr.data.count ? m_isr.data.count : max_cnt;
 		
 		while (count--) {

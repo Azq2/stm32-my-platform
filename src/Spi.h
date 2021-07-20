@@ -36,9 +36,7 @@ class Spi {
 			MSB_FIRST		= 1
 		};
 		
-		bool m_crc = false;
 		BitOrder m_data_bit_order = MSB_FIRST;
-		uint16_t m_default_write_value = 0xFFFF;
 		Mode m_mode = MODE_0;
 		
 		int m_id = -1;
@@ -68,6 +66,7 @@ class Spi {
 			bool wide;
 			int error;
 			int size;
+			uint16_t default_write;
 		} m_isr = {};
 		
 		SemaphoreHandle_t m_transfer_sem = nullptr;
@@ -102,15 +101,11 @@ class Spi {
 			return 0;
 		}
 		
-		int transfer(const void *buffer_tx, int size_tx, void *buffer_rx, int size_rx, bool wide);
+		int transfer(const void *buffer_tx, int size_tx, void *buffer_rx, int size_rx, uint16_t default_write, bool wide);
 	public:
 		enum {
-			ERR_SUCCESS				= 0,
-			ERR_UNKNOWN				= -1,
-			ERR_TIMEOUT				= -2,
-			ERR_CRC_FAIL			= -3,
-			ERR_OVERRUN				= -4,
-			ERR_FAULT				= -5,
+			ERR_SUCCESS		= 0,
+			ERR_UNKNOWN		= -1
 		};
 		
 		enum {
@@ -129,7 +124,6 @@ class Spi {
 		
 		void setSpeed(uint32_t speed);
 		void setMode(Mode mode);
-		void setCrcControl(bool enable);
 		void setBitOrder(BitOrder order);
 		
 		constexpr uint32_t getRealSpeed() {
@@ -138,54 +132,54 @@ class Spi {
 		
 		void handleIrq();
 		
-		// Send one byte and return response or error
+		// Send one byte and return response
 		inline int transfer(uint8_t byte) {
-			int ret = transfer(&byte, 1, &byte, 1, false);
+			int ret = transfer(&byte, 1, &byte, 1, 0xFF, false);
 			return ret < 0 ? ret : byte;
 		}
 		
 		inline int transfer16(uint16_t byte) {
-			int ret = transfer(&byte, 1, &byte, 1, true);
+			int ret = transfer(&byte, 1, &byte, 1, 0xFFFF, true);
 			return ret < 0 ? ret : byte;
 		}
 		
 		// Read-only
-		inline int read(uint8_t *buffer_rx, int size_rx) {
-			return transfer(nullptr, 0, buffer_rx, size_rx, false);
+		inline int read(uint8_t *buffer_rx, int size_rx, uint8_t default_write = 0xFF) {
+			return transfer(nullptr, 0, buffer_rx, size_rx, default_write, false);
 		}
 		
-		inline int read16(uint8_t *buffer_rx, int size_rx) {
-			return transfer(nullptr, 0, buffer_rx, size_rx, true);
+		inline int read16(uint8_t *buffer_rx, int size_rx, uint16_t default_write = 0xFFFF) {
+			return transfer(nullptr, 0, buffer_rx, size_rx, default_write, true);
 		}
 		
 		// Write-only
 		inline int write(const uint8_t *buffer_tx, int size_tx) {
-			return transfer(buffer_tx, size_tx, nullptr, 0, false);
+			return transfer(buffer_tx, size_tx, nullptr, 0, 0xFF, false);
 		}
 		
 		inline int write16(const uint8_t *buffer_tx, int size_tx) {
-			return transfer(buffer_tx, size_tx, nullptr, 0, true);
+			return transfer(buffer_tx, size_tx, nullptr, 0, 0xFFFF, true);
 		}
 		
 		// Write+Read
-		inline int transfer(const uint8_t *buffer_tx, int size_tx, uint8_t *buffer_rx, int size_rx) {
-			return transfer(buffer_tx, size_tx, buffer_rx, size_rx, false);
+		inline int transfer(const uint8_t *buffer_tx, int size_tx, uint8_t *buffer_rx, int size_rx, uint8_t default_write = 0xFF) {
+			return transfer(buffer_tx, size_tx, buffer_rx, size_rx, default_write, false);
 		}
 		
-		inline int transfer16(const uint16_t *buffer_tx, int size_tx, uint16_t *buffer_rx, int size_rx) {
-			return transfer(buffer_tx, size_tx, buffer_rx, size_rx, true);
+		inline int transfer16(const uint16_t *buffer_tx, int size_tx, uint16_t *buffer_rx, int size_rx, uint16_t default_write = 0xFFFF) {
+			return transfer(buffer_tx, size_tx, buffer_rx, size_rx, default_write, true);
 		}
 		
 		inline int transfer(uint8_t *buffer_trx, int size_trx) {
-			return transfer(buffer_trx, size_trx, buffer_trx, size_trx, false);
+			return transfer(buffer_trx, size_trx, buffer_trx, size_trx, 0xFF, false);
 		}
 		
 		inline int transfer16(uint16_t *buffer_trx, int size_trx) {
-			return transfer(buffer_trx, size_trx, buffer_trx, size_trx, true);
+			return transfer(buffer_trx, size_trx, buffer_trx, size_trx, 0xFFFF, true);
 		}
 		
 		void configure();
 		
-		Spi(uint32_t spi);
+		explicit Spi(uint32_t spi);
 		~Spi();
 };

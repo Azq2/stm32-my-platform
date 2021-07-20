@@ -39,6 +39,11 @@ namespace Gpio {
 		return GPIO_PORT_A_BASE + (id * 0x0400);
 	}
 	
+	constexpr char bank2name(uint32_t bank) {
+		// On stm32 all gpio registers are ordered and same indented
+		return 'A' + bank2id(bank);
+	}
+	
 	// Reduce power consumption
 	inline void setAllAnalog() {
 		rcc_periph_clock_enable(RCC_GPIOA);
