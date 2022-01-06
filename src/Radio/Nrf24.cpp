@@ -183,6 +183,12 @@ int Nrf24::write(const void *buffer, uint8_t size, bool no_ack, int retries) {
 	return ret;
 }
 
+int Nrf24::writeAckPayload(uint8_t pipe, const void *buffer, uint8_t size) {
+	configASSERT(pipe < 6);
+	writeRegister(Hw::CMD_W_ACK_PAYLOAD | pipe, buffer, size);
+	return ERR_SUCCESS;
+}
+
 int Nrf24::_writeFinish(int &retries) {
 	uint8_t status = waitForIrqFlags(Hw::STATUS_TX_DS | Hw::STATUS_MAX_RT, DEFAULT_WRITE_TIMEOUT);
 	

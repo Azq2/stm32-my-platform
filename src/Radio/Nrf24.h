@@ -9,8 +9,8 @@
 
 class Nrf24 {
 	public:
-		// Minimum timeout: MAX_ARD (4000us) * MAX_ARC (15) = 60 ms
-		static constexpr uint32_t DEFAULT_WRITE_TIMEOUT	= 60;
+		// Minimum timeout: (MAX_ARD[4000us] + 130us) * MAX_ARC[15] = 62 ms
+		static constexpr uint32_t DEFAULT_WRITE_TIMEOUT	= 62;
 		static constexpr uint8_t RX_FIFO_COUNT = 3;
 		static constexpr uint8_t TX_FIFO_COUNT = 3;
 		
@@ -306,8 +306,12 @@ class Nrf24 {
 		void end();
 		
 		/* TX functions */
+		
 		// Sync write one packet and wait for transmission done
 		int write(const void *buffer, uint8_t size, bool no_ack = false, int retries = 0);
+		
+		// Write payload for ACK for next received packed in RX mode
+		int writeAckPayload(uint8_t pipe, const void *buffer, uint8_t size);
 		
 		// Async write one packet without waiting for transmission done
 		// But in case when TX FIFO is full it waits for ends of last transmission
@@ -332,6 +336,7 @@ class Nrf24 {
 		}
 		
 		/* RX functions */
+		
 		// Wait for new packet in RX FIFO
 		bool waitForPacket(uint32_t timeout_ms);
 		
