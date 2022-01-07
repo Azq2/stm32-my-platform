@@ -75,7 +75,7 @@ class UsartBase {
 		
 		virtual void init();
 		virtual void deinit();
-		virtual void handleIrq() = 0;
+		virtual void handleIrq() = 0; 
 	public:
 		static inline void irq(uint32_t index) {
 			UsartBase *instance = m_instances[index];

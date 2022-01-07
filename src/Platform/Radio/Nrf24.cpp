@@ -1,6 +1,6 @@
 #include "Nrf24.h"
-#include "Exti.h"
-#include "Delay.h"
+#include "../Exti.h"
+#include "../Delay.h"
 
 #include <cstdio>
 

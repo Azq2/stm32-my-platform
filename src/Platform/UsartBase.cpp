@@ -62,7 +62,6 @@ void UsartBase::configure() {
 	if (!m_instances[m_id])
 		return;
 	
-	taskENTER_CRITICAL();
 	usart_set_baudrate(m_config->usart, m_baudrate);
 	usart_set_databits(m_config->usart, m_databits);
 	usart_set_stopbits(m_config->usart, m_stopbits);
@@ -75,7 +74,6 @@ void UsartBase::configure() {
 	} else {
 		USART_CR3(m_config->usart) &= ~USART_CR3_HDSEL;
 	}
-	taskEXIT_CRITICAL();
 }
 
 int UsartBase::open() {
