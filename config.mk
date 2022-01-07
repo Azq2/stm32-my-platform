@@ -1,15 +1,15 @@
-INCLUDES += -I$(STM32_MAGIC_DIR)/src
+INCLUDES += -I$(STM32_MY_PLATFORM_DIR)/src
 
 # Basic peripherals
-CXXFILES += $(STM32_MAGIC_DIR)/src/Exti.cpp
-CXXFILES += $(STM32_MAGIC_DIR)/src/Spi.cpp
-CXXFILES += $(STM32_MAGIC_DIR)/src/Sd.cpp
-CXXFILES += $(STM32_MAGIC_DIR)/src/UsartBase.cpp
-CXXFILES += $(STM32_MAGIC_DIR)/src/Usart.cpp
-CXXFILES += $(STM32_MAGIC_DIR)/src/UsartBuffered.cpp
+CXXFILES += $(STM32_MY_PLATFORM_DIR)/src/Platform/Exti.cpp
+CXXFILES += $(STM32_MY_PLATFORM_DIR)/src/Platform/Spi.cpp
+CXXFILES += $(STM32_MY_PLATFORM_DIR)/src/Platform/Sd.cpp
+CXXFILES += $(STM32_MY_PLATFORM_DIR)/src/Platform/UsartBase.cpp
+CXXFILES += $(STM32_MY_PLATFORM_DIR)/src/Platform/Usart.cpp
+CXXFILES += $(STM32_MY_PLATFORM_DIR)/src/Platform/UsartBuffered.cpp
 
 # Radio modules
-CXXFILES += $(STM32_MAGIC_DIR)/src/Radio/Nrf24.cpp
+CXXFILES += $(STM32_MY_PLATFORM_DIR)/src/Platform/Radio/Nrf24.cpp
 
 # For Leds
-CXXFILES += $(STM32_MAGIC_DIR)/src/Led/Charlieplexing.cpp
+CXXFILES += $(STM32_MY_PLATFORM_DIR)/src/Platform/Led/Charlieplexing.cpp
