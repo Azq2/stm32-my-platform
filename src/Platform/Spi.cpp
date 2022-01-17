@@ -231,6 +231,7 @@ void Spi::handleIrq() {
 }
 
 Spi::~Spi() {
+	vSemaphoreDelete(m_transfer_sem);
 	close();
 }
 
