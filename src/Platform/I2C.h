@@ -30,6 +30,7 @@ class I2C {
 		const HwConfig *m_config = nullptr;
 		uint32_t m_speed = MAX_STANDART_SPEED;
 		uint32_t m_real_speed = 0;
+		bool m_start = false;
 		
 		struct {
 			uint8_t *buffer = nullptr;
@@ -37,6 +38,7 @@ class I2C {
 			int size = 0;
 			int remain = 0;
 			int error = ERR_SUCCESS;
+			bool repeated = false;
 		} m_isr = {};
 		
 		SemaphoreHandle_t m_transfer_sem = nullptr;
@@ -68,9 +70,8 @@ class I2C {
 			ERR_BUSY					= -3,
 			ERR_TIMEOUT					= -4,
 			ERR_OVERRUN_OR_UNDERRUN		= -5,
-			ERR_ACK_FAILURE				= -6,
-			ERR_ARBITRATION_LOST		= -7,
-			ERR_BUS						= -8
+			ERR_ARBITRATION_LOST		= -6,
+			ERR_BUS						= -7
 		};
 		
 		static inline void irqEvent(uint32_t index) {
@@ -87,6 +88,9 @@ class I2C {
 		
 		int open();
 		int close();
+		
+		int start();
+		int stop();
 		
 		int waitForBusyFlag(TimeOut_t *timeout, TickType_t *ticks_to_wait);
 		

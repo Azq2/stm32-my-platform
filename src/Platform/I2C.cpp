@@ -142,6 +142,8 @@ int I2C::open() {
 	nvic_set_priority(m_config->irq_ev, configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY);
 	nvic_set_priority(m_config->irq_er, configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY);
 	
+	m_start = false;
+	
 	taskEXIT_CRITICAL();
 	return 0;
 }
@@ -150,8 +152,35 @@ int I2C::waitForBusyFlag(TimeOut_t *timeout, TickType_t *ticks_to_wait) {
 	while ((I2C_SR2(m_config->i2c) & I2C_SR2_BUSY)) {
 		if (xTaskCheckForTimeOut(timeout, ticks_to_wait))
 			return false;
+		taskYIELD();
 	}
 	return true;
+}
+
+int I2C::start() {
+	TickType_t ticks_to_wait = pdMS_TO_TICKS(25);
+	TimeOut_t timeout;
+	
+	if (!m_start) {
+		if (!waitForBusyFlag(&timeout, &ticks_to_wait))
+			return ERR_BUSY;
+	}
+	
+	taskENTER_CRITICAL();
+	i2c_send_start(m_config->i2c);
+	m_start = true;
+	taskEXIT_CRITICAL();
+	
+	return ERR_SUCCESS;
+}
+
+int I2C::stop() {
+	taskENTER_CRITICAL();
+	i2c_send_stop(m_config->i2c);
+	m_start = false;
+	taskEXIT_CRITICAL();
+	
+	return ERR_SUCCESS;
 }
 
 int I2C::read(uint16_t addr, uint8_t *buffer, int size, bool repeated, int timeout_ms) {
@@ -168,14 +197,17 @@ int I2C::read(uint16_t addr, uint8_t *buffer, int size, bool repeated, int timeo
 	m_isr.size = size;
 	m_isr.remain = size;
 	m_isr.addr = (addr << 1) | 1;
+	m_isr.repeated = repeated;
 	
-	if (!waitForBusyFlag(&timeout, &ticks_to_wait))
-		return ERR_BUSY;
+	printf("read m_start=%d\r\n", m_start);
 	
-	i2c_enable_interrupt(m_config->i2c, I2C_CR2_ITEVTEN | I2C_CR2_ITERREN);
 	i2c_nack_current(m_config->i2c);
 	i2c_enable_ack(m_config->i2c);
-	i2c_send_start(m_config->i2c);
+	
+	if (!m_start)
+		start();
+	
+	i2c_enable_interrupt(m_config->i2c, I2C_CR2_ITEVTEN | I2C_CR2_ITERREN);
 	
 	xSemaphoreTake(m_transfer_sem, ticks_to_wait);
 	
@@ -198,14 +230,17 @@ int I2C::write(uint16_t addr, const uint8_t *buffer, int size, bool repeated, in
 	m_isr.size = size;
 	m_isr.remain = size;
 	m_isr.addr = (addr << 1);
+	m_isr.repeated = repeated;
 	
-	if (!waitForBusyFlag(&timeout, &ticks_to_wait))
-		return ERR_BUSY;
+	printf("write m_start=%d\r\n", m_start);
 	
-	i2c_enable_interrupt(m_config->i2c, I2C_CR2_ITEVTEN | I2C_CR2_ITERREN);
 	i2c_nack_current(m_config->i2c);
 	i2c_enable_ack(m_config->i2c);
-	i2c_send_start(m_config->i2c);
+	
+	if (!m_start)
+		start();
+	
+	i2c_enable_interrupt(m_config->i2c, I2C_CR2_ITEVTEN | I2C_CR2_ITERREN);
 	
 	xSemaphoreTake(m_transfer_sem, ticks_to_wait);
 	
@@ -228,6 +263,8 @@ int I2C::close() {
 	
 	// Disable i2c clock
 	rcc_periph_clock_disable(m_config->rcc);
+	
+	m_start = false;
 	
 	m_instances[m_id] = nullptr;
 	
@@ -261,8 +298,15 @@ void I2C::handleIrqEv() {
 				// Clear ADDR=1 by reading SR2
 				(void) I2C_SR2(m_config->i2c);
 				
-				// STOP=1
-				i2c_send_stop(m_config->i2c);
+				if (m_isr.repeated) {
+					// START=1
+					i2c_send_start(m_config->i2c);
+					m_start = true;
+				} else {
+					// STOP=1
+					i2c_send_stop(m_config->i2c);
+					m_start = false;
+				}
 				
 				// Wait for RxNE
 				i2c_enable_interrupt(m_config->i2c, I2C_CR2_ITBUFEN);
@@ -292,8 +336,15 @@ void I2C::handleIrqEv() {
 				// ACK=0
 				i2c_disable_ack(m_config->i2c);
 			} else if ((sr1 & I2C_SR1_BTF)) {
-				// STOP=1
-				i2c_send_stop(m_config->i2c);
+				if (m_isr.repeated) {
+					// START=1
+					i2c_send_start(m_config->i2c);
+					m_start = true;
+				} else {
+					// STOP=1
+					i2c_send_stop(m_config->i2c);
+					m_start = false;
+				}
 				
 				// Read 2 bytes
 				for (int i = 0; i < 2; i++) {
@@ -343,8 +394,15 @@ void I2C::handleIrqEv() {
 				*m_isr.buffer++ = I2C_DR(m_config->i2c);
 				m_isr.remain--;
 				
-				// STOP=1
-				i2c_send_stop(m_config->i2c);
+				if (m_isr.repeated) {
+					// START=1
+					i2c_send_start(m_config->i2c);
+					m_start = true;
+				} else {
+					// STOP=1
+					i2c_send_stop(m_config->i2c);
+					m_start = false;
+				}
 				
 				// Read N-1 byte
 				*m_isr.buffer++ = I2C_DR(m_config->i2c);
@@ -381,8 +439,15 @@ void I2C::handleIrqEv() {
 				i2c_disable_interrupt(m_config->i2c, I2C_CR2_ITBUFEN);
 			}
 		} else if (!(I2C_CR2(m_config->i2c) & I2C_CR2_ITBUFEN) && (sr1 & I2C_SR1_BTF)) {
-			// STOP=1
-			i2c_send_stop(m_config->i2c);
+			if (m_isr.repeated) {
+				// START=1
+				i2c_send_start(m_config->i2c);
+				m_start = true;
+			} else {
+				// STOP=1
+				i2c_send_stop(m_config->i2c);
+				m_start = false;
+			}
 			
 			// Finish transfer
 			i2c_disable_interrupt(m_config->i2c, I2C_ALL_IRQ);
@@ -399,19 +464,22 @@ void I2C::handleIrqEv() {
 }
 
 void I2C::handleIrqEr() {
-	printf("handleIrqEr\r\n");
-	dump_sr1(I2C_SR1(m_config->i2c));
-	dump_sr2(I2C_SR2(m_config->i2c));
-	
 	BaseType_t higher_task_woken = pdFALSE;
 	uint32_t status = I2C_SR1(m_config->i2c);
+	
+	I2C_SR1(m_config->i2c) &= ~I2C_ALL_ERRORS;
+	I2C_SR1(m_config->i2c) &= ~I2C_SR1_ADDR;
 	
 	if ((status & I2C_SR1_TIMEOUT)) {
 		m_isr.error = ERR_TIMEOUT;
 	} else if ((status & I2C_SR1_OVR)) {
 		m_isr.error = ERR_OVERRUN_OR_UNDERRUN;
 	} else if ((status & I2C_SR1_AF)) {
-		m_isr.error = ERR_ACK_FAILURE;
+		m_isr.error = ERR_NACK;
+		
+		// Send stop on AF
+		i2c_send_stop(m_config->i2c);
+		m_start = false;
 	} else if ((status & I2C_SR1_ARLO)) {
 		m_isr.error = ERR_ARBITRATION_LOST;
 	} else if ((status & I2C_SR1_BERR)) {
@@ -420,10 +488,15 @@ void I2C::handleIrqEr() {
 		m_isr.error = ERR_UNKNOWN;
 	}
 	
-	I2C_SR1(m_config->i2c) &= ~I2C_ALL_ERRORS;
-	I2C_SR1(m_config->i2c) &= ~I2C_SR1_ADDR;
+	if ((m_isr.addr & 1)) {
+		// POS=0
+		i2c_nack_current(m_config->i2c);
+		
+		// Dummy read last byte from FIFO
+		if ((status & I2C_SR1_RxNE))
+			(void) I2C_DR(m_config->i2c);
+	}
 	
-	i2c_send_stop(m_config->i2c);
 	i2c_disable_interrupt(m_config->i2c, I2C_ALL_IRQ);
 	xSemaphoreGiveFromISR(m_transfer_sem, &higher_task_woken);
 	portYIELD_FROM_ISR(higher_task_woken);
