@@ -11,58 +11,6 @@
 
 I2C *I2C::m_instances[I2C::I2C_COUNT] = {};
 
-static void dump_sr1(uint32_t status) {
-	struct {
-		uint32_t bit;
-		const char *name;
-	} regs[] = {
-		{I2C_SR1_SMBALERT, "I2C_SR1_SMBALERT"},
-		{I2C_SR1_TIMEOUT, "I2C_SR1_TIMEOUT"},
-		{I2C_SR1_PECERR, "I2C_SR1_PECERR"},
-		{I2C_SR1_OVR, "I2C_SR1_OVR"},
-		{I2C_SR1_AF, "I2C_SR1_AF"},
-		{I2C_SR1_ARLO, "I2C_SR1_ARLO"},
-		{I2C_SR1_BERR, "I2C_SR1_BERR"},
-		{I2C_SR1_TxE, "I2C_SR1_TxE"},
-		{I2C_SR1_RxNE, "I2C_SR1_RxNE"},
-		{I2C_SR1_STOPF, "I2C_SR1_STOPF"},
-		{I2C_SR1_ADD10, "I2C_SR1_ADD10"},
-		{I2C_SR1_BTF, "I2C_SR1_BTF"},
-		{I2C_SR1_ADDR, "I2C_SR1_ADDR"},
-		{I2C_SR1_SB, "I2C_SR1_SB"},
-	};
-	
-	printf("I2C_SR1:\r\n");
-	for (int i = 0; i < (sizeof(regs) / sizeof(regs[0])); i++) {
-		if ((status & regs[i].bit)) {
-			printf("  %s\r\n", regs[i].name);
-		}
-	}
-	printf("\r\n");
-}
-
-static void dump_sr2(uint32_t status) {
-	struct {
-		uint32_t bit;
-		const char *name;
-	} regs[] = {
-		{I2C_SR2_DUALF, "I2C_SR2_DUALF"},
-		{I2C_SR2_SMBHOST, "I2C_SR2_SMBHOST"},
-		{I2C_SR2_SMBDEFAULT, "I2C_SR2_SMBDEFAULT"},
-		{I2C_SR2_GENCALL, "I2C_SR2_GENCALL"},
-		{I2C_SR2_TRA, "I2C_SR2_TRA"},
-		{I2C_SR2_MSL, "I2C_SR2_MSL"},
-	};
-	
-	printf("I2C_SR2:\r\n");
-	for (int i = 0; i < (sizeof(regs) / sizeof(regs[0])); i++) {
-		if ((status & regs[i].bit)) {
-			printf("  %s\r\n", regs[i].name);
-		}
-	}
-	printf("\r\n");
-}
-
 I2C::I2C(uint32_t i2c) {
 	for (int i = 0; i < I2C_COUNT; i++) {
 		if (m_i2c_ports[i].i2c == i2c) {
@@ -73,13 +21,24 @@ I2C::I2C(uint32_t i2c) {
 	}
 	
 	m_transfer_sem = xSemaphoreCreateBinary();
+	m_mutex = xSemaphoreCreateMutex();
 	
 	configASSERT(m_id != -1);
 }
 
+void I2C::lock() {
+	xSemaphoreTake(m_mutex, portMAX_DELAY);
+}
+
+void I2C::unlock() {
+	xSemaphoreGive(m_mutex);
+}
+
 void I2C::setSpeed(uint32_t speed) {
+	lock();
 	m_speed = speed;
 	configure();
+	unlock();
 }
 
 void I2C::configure() {
@@ -119,8 +78,11 @@ void I2C::configure() {
 }
 
 int I2C::open() {
-	if (m_instances[m_id])
-		return -EEXIST;
+	lock();
+	if (m_instances[m_id]) {
+		unlock();
+		return ERR_BUSY;
+	}
 	
 	m_instances[m_id] = this;
 	
@@ -145,7 +107,17 @@ int I2C::open() {
 	m_start = false;
 	
 	taskEXIT_CRITICAL();
-	return 0;
+	unlock();
+	return ERR_SUCCESS;
+}
+
+int I2C::waitForBtfFlag(TimeOut_t *timeout, TickType_t *ticks_to_wait) {
+	while ((I2C_SR1(m_config->i2c) & I2C_SR1_BTF)) {
+		if (xTaskCheckForTimeOut(timeout, ticks_to_wait))
+			return false;
+		taskYIELD();
+	}
+	return true;
 }
 
 int I2C::waitForBusyFlag(TimeOut_t *timeout, TickType_t *ticks_to_wait) {
@@ -157,119 +129,221 @@ int I2C::waitForBusyFlag(TimeOut_t *timeout, TickType_t *ticks_to_wait) {
 	return true;
 }
 
-int I2C::start() {
-	TickType_t ticks_to_wait = pdMS_TO_TICKS(25);
-	TimeOut_t timeout;
+bool I2C::ping(uint8_t addr, int tries, int timeout_ms) {
+	for (int i = 0; i < tries; i++) {
+		if (write(addr, nullptr, 0, timeout_ms) == ERR_SUCCESS)
+			return true;
+	}
+	return false;
+}
+
+int I2C::read(uint16_t addr, uint8_t *buffer, int size, int timeout_ms) {
+	lock();
+	int ret = _read(addr, buffer, size, I2C_TRANSFER_SEND_START | I2C_TRANSFER_SEND_STOP, timeout_ms);
+	unlock();
+	return ret;
+}
+
+int I2C::write(uint16_t addr, const uint8_t *buffer, int size, int timeout_ms) {
+	lock();
+	int ret = _write(addr, buffer, size, I2C_TRANSFER_SEND_START | I2C_TRANSFER_SEND_STOP, timeout_ms);
+	unlock();
+	return ret;
+}
+
+int I2C::transfer(uint16_t addr, I2CMessage *msgs, int count) {
+	lock();
 	
-	if (!m_start) {
-		if (!waitForBusyFlag(&timeout, &ticks_to_wait))
-			return ERR_BUSY;
+	bool last_dir = false;
+	for (int i = 0; i < count; i++) {
+		I2CMessage *msg = &msgs[i];
+		
+		bool dir = (msg->flags & I2CMessage::WRITE) != 0;
+		uint32_t flags = 0;
+		
+		if (i == 0 || !(msg->flags & I2CMessage::NOSTART) || last_dir != dir) {
+			// Force send START bit on first message
+			// Or if direction changed
+			// Or if I2CMessage::NOSTART flag not set
+			flags |= I2C_TRANSFER_SEND_START;
+		}
+		
+		if (i == count - 1 || (msg->flags & I2CMessage::STOP)) {
+			// Force send STOP bit on last message
+			// Or if I2CMessage::STOP flag is set
+			flags |= I2C_TRANSFER_SEND_STOP;
+		}
+		
+		int ret;
+		if (dir) {
+			ret = _write(addr, msg->buffer, msg->size, flags, msg->timeout);
+		} else {
+			ret = _read(addr, msg->buffer, msg->size, flags, msg->timeout);
+		}
+		
+		last_dir = dir;
+		
+		if (ret != ERR_SUCCESS) {
+			unlock();
+			return ret;
+		}
 	}
 	
-	taskENTER_CRITICAL();
-	i2c_send_start(m_config->i2c);
-	m_start = true;
-	taskEXIT_CRITICAL();
-	
+	unlock();
 	return ERR_SUCCESS;
 }
 
-int I2C::stop() {
-	taskENTER_CRITICAL();
-	i2c_send_stop(m_config->i2c);
-	m_start = false;
-	taskEXIT_CRITICAL();
-	
-	return ERR_SUCCESS;
-}
-
-int I2C::read(uint16_t addr, uint8_t *buffer, int size, bool repeated, int timeout_ms) {
+int I2C::_read(uint16_t addr, uint8_t *buffer, int size, uint32_t flags, int timeout_ms) {
 	TickType_t ticks_to_wait = pdMS_TO_TICKS(timeout_ms);
 	TimeOut_t timeout;
 	
 	vTaskSetTimeOutState(&timeout);
 	
-	if (!size)
-		return ERR_SUCCESS;
+	if (!m_instances[m_id])
+		return ERR_BUSY;
+	
+	if (!size) {
+		_abort();
+		return ERR_INVALID;
+	}
 	
 	m_isr.error = ERR_SUCCESS;
 	m_isr.buffer = buffer;
 	m_isr.size = size;
 	m_isr.remain = size;
 	m_isr.addr = (addr << 1) | 1;
-	m_isr.repeated = repeated;
+	m_isr.flags = flags;
 	
-	printf("read m_start=%d\r\n", m_start);
-	
+	i2c_peripheral_enable(m_config->i2c);
 	i2c_nack_current(m_config->i2c);
 	i2c_enable_ack(m_config->i2c);
 	
-	if (!m_start)
-		start();
+	if ((flags & I2C_TRANSFER_SEND_START) || !m_start) {
+		if (!m_start) {
+			if (!waitForBusyFlag(&timeout, &ticks_to_wait)) {
+				_abort();
+				return ERR_BUSY;
+			}
+		}
+		
+		i2c_send_start(m_config->i2c);
+		m_start = true;
+		
+		waitForBtfFlag(&timeout, &ticks_to_wait);
+	}
 	
 	i2c_enable_interrupt(m_config->i2c, I2C_CR2_ITEVTEN | I2C_CR2_ITERREN);
 	
-	xSemaphoreTake(m_transfer_sem, ticks_to_wait);
+	int ret;
+	if (xSemaphoreTake(m_transfer_sem, ticks_to_wait)) {
+		ret = m_isr.error;
+	} else {
+		_abort();
+		ret = ERR_TIMEOUT;
+	}
 	
-	if (m_isr.error == ERR_SUCCESS)
-		return size - m_isr.remain;
-	return m_isr.error;
+	return ret;
 }
 
-int I2C::write(uint16_t addr, const uint8_t *buffer, int size, bool repeated, int timeout_ms) {
+int I2C::_write(uint16_t addr, const uint8_t *buffer, int size, uint32_t flags, int timeout_ms) {
 	TickType_t ticks_to_wait = pdMS_TO_TICKS(timeout_ms);
 	TimeOut_t timeout;
 	
 	vTaskSetTimeOutState(&timeout);
 	
-	if (!size)
-		return ERR_SUCCESS;
+	if (!m_instances[m_id])
+		return ERR_BUSY;
 	
 	m_isr.error = ERR_SUCCESS;
 	m_isr.buffer = const_cast<uint8_t *>(buffer);
 	m_isr.size = size;
 	m_isr.remain = size;
 	m_isr.addr = (addr << 1);
-	m_isr.repeated = repeated;
+	m_isr.flags = flags;
 	
-	printf("write m_start=%d\r\n", m_start);
-	
+	i2c_peripheral_enable(m_config->i2c);
 	i2c_nack_current(m_config->i2c);
 	i2c_enable_ack(m_config->i2c);
 	
-	if (!m_start)
-		start();
+	if ((flags & I2C_TRANSFER_SEND_START) || !m_start) {
+		if (!m_start) {
+			if (!waitForBusyFlag(&timeout, &ticks_to_wait)) {
+				_abort();
+				return ERR_BUSY;
+			}
+		}
+		
+		i2c_send_start(m_config->i2c);
+		m_start = true;
+		
+		waitForBtfFlag(&timeout, &ticks_to_wait);
+	} else {
+		i2c_enable_interrupt(m_config->i2c, I2C_CR2_ITBUFEN);
+	}
 	
 	i2c_enable_interrupt(m_config->i2c, I2C_CR2_ITEVTEN | I2C_CR2_ITERREN);
 	
-	xSemaphoreTake(m_transfer_sem, ticks_to_wait);
+	int ret;
+	if (xSemaphoreTake(m_transfer_sem, ticks_to_wait)) {
+		ret = m_isr.error;
+	} else {
+		_abort();
+		ret = ERR_TIMEOUT;
+	}
 	
-	if (m_isr.error == ERR_SUCCESS)
-		return size - m_isr.remain;
-	return m_isr.error;
+	return ret;
+}
+
+void I2C::_abort() {
+	if (m_start) {
+		// Disable all IRQ
+		i2c_disable_interrupt(m_config->i2c, I2C_ALL_IRQ);
+		
+		// ACK=0
+		i2c_disable_ack(m_config->i2c);
+		
+		// STOP=1
+		_stop();
+		
+		// POS=0
+		i2c_nack_current(m_config->i2c);
+		
+		// Dummy read
+		if ((I2C_SR1(m_config->i2c) & I2C_SR1_RxNE))
+			(void) I2C_DR(m_config->i2c);
+		
+		// Disable peripheral
+		i2c_peripheral_disable(m_config->i2c);
+	}
+}
+
+void I2C::_stop() {
+	i2c_send_stop(m_config->i2c);
+	m_start = false;
 }
 
 int I2C::close() {
-	if (!m_instances[m_id])
-		return -ENOENT;
-	
-	taskENTER_CRITICAL();
-	// Disable IRQ
-	nvic_disable_irq(m_config->irq_er);
-	nvic_disable_irq(m_config->irq_ev);
-	
-	// Disable i2c
-	i2c_peripheral_disable(m_config->i2c);
-	
-	// Disable i2c clock
-	rcc_periph_clock_disable(m_config->rcc);
-	
-	m_start = false;
-	
-	m_instances[m_id] = nullptr;
-	
-	taskEXIT_CRITICAL();
-	return 0;
+	lock();
+	if (m_instances[m_id]) {
+		taskENTER_CRITICAL();
+		// Disable IRQ
+		nvic_disable_irq(m_config->irq_er);
+		nvic_disable_irq(m_config->irq_ev);
+		
+		// Disable i2c
+		i2c_peripheral_disable(m_config->i2c);
+		
+		// Disable i2c clock
+		rcc_periph_clock_disable(m_config->rcc);
+		
+		m_start = false;
+		
+		m_instances[m_id] = nullptr;
+		
+		taskEXIT_CRITICAL();
+	}
+	unlock();
+	return ERR_SUCCESS;
 }
 
 // Flow similar to application note AN2824
@@ -277,6 +351,7 @@ void I2C::handleIrqEv() {
 	BaseType_t higher_task_woken = pdFALSE;
 	uint32_t sr1 = I2C_SR1(m_config->i2c);
 	
+	//printf("handleIrqEv\r\n");
 	if ((sr1 & I2C_SR1_SB)) {
 		// Clear SB=1 by reading SR2
 		(void) I2C_SR2(m_config->i2c);
@@ -298,14 +373,9 @@ void I2C::handleIrqEv() {
 				// Clear ADDR=1 by reading SR2
 				(void) I2C_SR2(m_config->i2c);
 				
-				if (m_isr.repeated) {
-					// START=1
-					i2c_send_start(m_config->i2c);
-					m_start = true;
-				} else {
+				if ((m_isr.flags & I2C_TRANSFER_SEND_STOP)) {
 					// STOP=1
-					i2c_send_stop(m_config->i2c);
-					m_start = false;
+					_stop();
 				}
 				
 				// Wait for RxNE
@@ -318,10 +388,6 @@ void I2C::handleIrqEv() {
 				// Finish transfer
 				i2c_disable_interrupt(m_config->i2c, I2C_ALL_IRQ);
 				xSemaphoreGiveFromISR(m_transfer_sem, &higher_task_woken);
-			} else {
-				printf("Unknown IRQ [1b]\r\n");
-				dump_sr1(sr1);
-				dump_sr1(I2C_SR2(m_config->i2c));
 			}
 		}
 		// Read 2 bytes
@@ -336,14 +402,9 @@ void I2C::handleIrqEv() {
 				// ACK=0
 				i2c_disable_ack(m_config->i2c);
 			} else if ((sr1 & I2C_SR1_BTF)) {
-				if (m_isr.repeated) {
-					// START=1
-					i2c_send_start(m_config->i2c);
-					m_start = true;
-				} else {
+				if ((m_isr.flags & I2C_TRANSFER_SEND_STOP)) {
 					// STOP=1
-					i2c_send_stop(m_config->i2c);
-					m_start = false;
+					_stop();
 				}
 				
 				// Read 2 bytes
@@ -355,10 +416,6 @@ void I2C::handleIrqEv() {
 				// Finish transfer
 				i2c_disable_interrupt(m_config->i2c, I2C_ALL_IRQ);
 				xSemaphoreGiveFromISR(m_transfer_sem, &higher_task_woken);
-			} else {
-				printf("Unknown IRQ [2b]\r\n");
-				dump_sr1(sr1);
-				dump_sr1(I2C_SR2(m_config->i2c));
 			}
 		}
 		// Read 3+ bytes
@@ -394,14 +451,9 @@ void I2C::handleIrqEv() {
 				*m_isr.buffer++ = I2C_DR(m_config->i2c);
 				m_isr.remain--;
 				
-				if (m_isr.repeated) {
-					// START=1
-					i2c_send_start(m_config->i2c);
-					m_start = true;
-				} else {
+				if ((m_isr.flags & I2C_TRANSFER_SEND_STOP)) {
 					// STOP=1
-					i2c_send_stop(m_config->i2c);
-					m_start = false;
+					_stop();
 				}
 				
 				// Read N-1 byte
@@ -410,10 +462,6 @@ void I2C::handleIrqEv() {
 				
 				// Last byte must read after RxNE event, enable it
 				i2c_enable_interrupt(m_config->i2c, I2C_CR2_ITBUFEN);
-			} else {
-				printf("Unknown IRQ [3b]\r\n");
-				dump_sr1(sr1);
-				dump_sr1(I2C_SR2(m_config->i2c));
 			}
 		}
 	}
@@ -423,12 +471,23 @@ void I2C::handleIrqEv() {
 			// Clear ADDR=1 by reading SR2
 			(void) I2C_SR2(m_config->i2c);
 			
-			I2C_DR(m_config->i2c) = *m_isr.buffer++;
-			m_isr.remain--;
+			if (m_isr.remain > 0) {
+				I2C_DR(m_config->i2c) = *m_isr.buffer++;
+				m_isr.remain--;
+			}
 			
 			if (m_isr.remain > 0) {
 				// We have more data for write
 				i2c_enable_interrupt(m_config->i2c, I2C_CR2_ITBUFEN);
+			} else {
+				if ((m_isr.flags & I2C_TRANSFER_SEND_STOP)) {
+					// STOP=1
+					_stop();
+				}
+				
+				// Finish transfer
+				i2c_disable_interrupt(m_config->i2c, I2C_ALL_IRQ);
+				xSemaphoreGiveFromISR(m_transfer_sem, &higher_task_woken);
 			}
 		} else if ((I2C_CR2(m_config->i2c) & I2C_CR2_ITBUFEN) && (sr1 & I2C_SR1_TxE)) {
 			I2C_DR(m_config->i2c) = *m_isr.buffer++;
@@ -439,23 +498,14 @@ void I2C::handleIrqEv() {
 				i2c_disable_interrupt(m_config->i2c, I2C_CR2_ITBUFEN);
 			}
 		} else if (!(I2C_CR2(m_config->i2c) & I2C_CR2_ITBUFEN) && (sr1 & I2C_SR1_BTF)) {
-			if (m_isr.repeated) {
-				// START=1
-				i2c_send_start(m_config->i2c);
-				m_start = true;
-			} else {
+			if ((m_isr.flags & I2C_TRANSFER_SEND_STOP)) {
 				// STOP=1
-				i2c_send_stop(m_config->i2c);
-				m_start = false;
+				_stop();
 			}
 			
 			// Finish transfer
 			i2c_disable_interrupt(m_config->i2c, I2C_ALL_IRQ);
 			xSemaphoreGiveFromISR(m_transfer_sem, &higher_task_woken);
-		} else {
-			printf("Unknown IRQ [w]\r\n");
-			dump_sr1(sr1);
-			dump_sr1(I2C_SR2(m_config->i2c));
 		}
 	}
 	
@@ -472,38 +522,42 @@ void I2C::handleIrqEr() {
 	
 	if ((status & I2C_SR1_TIMEOUT)) {
 		m_isr.error = ERR_TIMEOUT;
+		m_start = false;
 	} else if ((status & I2C_SR1_OVR)) {
 		m_isr.error = ERR_OVERRUN_OR_UNDERRUN;
+		m_start = false;
 	} else if ((status & I2C_SR1_AF)) {
 		m_isr.error = ERR_NACK;
 		
-		// Send stop on AF
-		i2c_send_stop(m_config->i2c);
-		m_start = false;
+		// STOP=1
+		_stop();
 	} else if ((status & I2C_SR1_ARLO)) {
 		m_isr.error = ERR_ARBITRATION_LOST;
+		m_start = false;
 	} else if ((status & I2C_SR1_BERR)) {
 		m_isr.error = ERR_BUS;
+		m_start = false;
 	} else {
 		m_isr.error = ERR_UNKNOWN;
 	}
 	
-	if ((m_isr.addr & 1)) {
-		// POS=0
-		i2c_nack_current(m_config->i2c);
-		
-		// Dummy read last byte from FIFO
-		if ((status & I2C_SR1_RxNE))
-			(void) I2C_DR(m_config->i2c);
-	}
-	
+	// Disable all IRQ
 	i2c_disable_interrupt(m_config->i2c, I2C_ALL_IRQ);
+	
+	// POS=0
+	i2c_nack_current(m_config->i2c);
+	
+	// Dummy read
+	if ((I2C_SR1(m_config->i2c) & I2C_SR1_RxNE))
+		(void) I2C_DR(m_config->i2c);
+	
 	xSemaphoreGiveFromISR(m_transfer_sem, &higher_task_woken);
 	portYIELD_FROM_ISR(higher_task_woken);
 }
 
 I2C::~I2C() {
 	vSemaphoreDelete(m_transfer_sem);
+	vSemaphoreDelete(m_mutex);
 	close();
 }
 

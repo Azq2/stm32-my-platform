@@ -9,6 +9,19 @@
 #include <FreeRTOS.h>
 #include <semphr.h>
 
+struct I2CMessage {
+	static constexpr uint8_t READ		= 1 << 0;
+	static constexpr uint8_t WRITE		= 1 << 1;
+	static constexpr uint8_t NOSTART	= 1 << 2;
+	static constexpr uint8_t STOP		= 1 << 3;
+	
+	uint8_t addr = 0;
+	uint8_t *buffer = 0;
+	int size = 0;
+	uint8_t flags = 0;
+	int timeout = 60000;
+};
+
 class I2C {
 	protected:
 		static constexpr uint32_t MAX_STANDART_SPEED	= 100000;
@@ -18,6 +31,11 @@ class I2C {
 		
 		static constexpr uint32_t I2C_ALL_ERRORS = I2C_SR1_TIMEOUT | I2C_SR1_OVR | I2C_SR1_AF | I2C_SR1_ARLO | I2C_SR1_BERR;
 		static constexpr uint32_t I2C_ALL_IRQ = I2C_CR2_ITBUFEN | I2C_CR2_ITEVTEN | I2C_CR2_ITERREN;
+		
+		enum TransferFlags {
+			I2C_TRANSFER_SEND_START	= 1 << 0,
+			I2C_TRANSFER_SEND_STOP	= 1 << 1,
+		};
 		
 		struct HwConfig {
 			uint32_t i2c;
@@ -38,10 +56,11 @@ class I2C {
 			int size = 0;
 			int remain = 0;
 			int error = ERR_SUCCESS;
-			bool repeated = false;
+			uint32_t flags = 0;
 		} m_isr = {};
 		
 		SemaphoreHandle_t m_transfer_sem = nullptr;
+		SemaphoreHandle_t m_mutex = nullptr;
 		
 		// Hardware config
 		constexpr static HwConfig m_i2c_ports[] = {
@@ -62,6 +81,22 @@ class I2C {
 		uint32_t getI2CBusClock() {
 			return rcc_apb1_frequency;
 		}
+		
+		void handleIrqEv();
+		void handleIrqEr();
+		
+		void configure();
+		
+		void lock();
+		void unlock();
+		
+		int waitForBusyFlag(TimeOut_t *timeout, TickType_t *ticks_to_wait);
+		int waitForBtfFlag(TimeOut_t *timeout, TickType_t *ticks_to_wait);
+		
+		int _read(uint16_t addr, uint8_t *buffer, int size, uint32_t flags, int timeout_ms = 60000);
+		int _write(uint16_t addr, const uint8_t *buffer, int size, uint32_t flags, int timeout_ms = 60000);
+		void _abort();
+		void _stop();
 	public:
 		enum {
 			ERR_SUCCESS					= 0,
@@ -71,7 +106,8 @@ class I2C {
 			ERR_TIMEOUT					= -4,
 			ERR_OVERRUN_OR_UNDERRUN		= -5,
 			ERR_ARBITRATION_LOST		= -6,
-			ERR_BUS						= -7
+			ERR_BUS						= -7,
+			ERR_INVALID					= -8
 		};
 		
 		static inline void irqEvent(uint32_t index) {
@@ -89,24 +125,17 @@ class I2C {
 		int open();
 		int close();
 		
-		int start();
-		int stop();
+		int read(uint16_t addr, uint8_t *buffer, int size, int timeout_ms = 60000);
+		int write(uint16_t addr, const uint8_t *buffer, int size, int timeout_ms = 60000);
+		int transfer(uint16_t addr, I2CMessage *msgs, int count);
 		
-		int waitForBusyFlag(TimeOut_t *timeout, TickType_t *ticks_to_wait);
-		
-		int read(uint16_t addr, uint8_t *buffer, int size, bool repeated = false, int timeout_ms = 60000);
-		int write(uint16_t addr, const uint8_t *buffer, int size, bool repeated = false, int timeout_ms = 60000);
+		bool ping(uint8_t addr, int tries = 3, int timeout_ms = 60000);
 		
 		void setSpeed(uint32_t speed);
 		
 		constexpr uint32_t getRealSpeed() {
 			return m_real_speed;
 		}
-		
-		void handleIrqEv();
-		void handleIrqEr();
-		
-		void configure();
 		
 		explicit I2C(uint32_t spi);
 		~I2C();

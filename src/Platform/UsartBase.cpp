@@ -70,7 +70,7 @@ void UsartBase::configure() {
 	usart_set_mode(m_config->usart, m_mode);
 	
 	if (m_half_duplex) {
-		USART_CR3(m_config->usart) = USART_CR3_HDSEL;
+		USART_CR3(m_config->usart) |= USART_CR3_HDSEL;
 	} else {
 		USART_CR3(m_config->usart) &= ~USART_CR3_HDSEL;
 	}
