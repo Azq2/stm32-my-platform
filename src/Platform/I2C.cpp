@@ -207,6 +207,12 @@ int I2C::_read(uint16_t addr, uint8_t *buffer, int size, uint32_t flags, int tim
 		return ERR_INVALID;
 	}
 	
+	if (!(flags & I2C_TRANSFER_SEND_START)) {
+		// Not supported due to stm32 limitations
+		_abort();
+		return ERR_INVALID;
+	}
+	
 	m_isr.error = ERR_SUCCESS;
 	m_isr.buffer = buffer;
 	m_isr.size = size;
@@ -218,19 +224,18 @@ int I2C::_read(uint16_t addr, uint8_t *buffer, int size, uint32_t flags, int tim
 	i2c_nack_current(m_config->i2c);
 	i2c_enable_ack(m_config->i2c);
 	
-	if ((flags & I2C_TRANSFER_SEND_START) || !m_start) {
-		if (!m_start) {
-			if (!waitForBusyFlag(&timeout, &ticks_to_wait)) {
-				_abort();
-				return ERR_BUSY;
-			}
+	if (!m_start) {
+		if (!waitForBusyFlag(&timeout, &ticks_to_wait)) {
+			_abort();
+			return ERR_BUSY;
 		}
-		
-		i2c_send_start(m_config->i2c);
-		m_start = true;
-		
-		waitForBtfFlag(&timeout, &ticks_to_wait);
 	}
+	
+	i2c_send_start(m_config->i2c);
+	m_start = true;
+	
+	// In some cases BTF flag is stuck after previous transfer 
+	waitForBtfFlag(&timeout, &ticks_to_wait);
 	
 	i2c_enable_interrupt(m_config->i2c, I2C_CR2_ITEVTEN | I2C_CR2_ITERREN);
 	
@@ -276,6 +281,7 @@ int I2C::_write(uint16_t addr, const uint8_t *buffer, int size, uint32_t flags, 
 		i2c_send_start(m_config->i2c);
 		m_start = true;
 		
+		// In some cases BTF flag is stuck after previous transfer 
 		waitForBtfFlag(&timeout, &ticks_to_wait);
 	} else {
 		i2c_enable_interrupt(m_config->i2c, I2C_CR2_ITBUFEN);
