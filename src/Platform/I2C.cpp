@@ -256,7 +256,7 @@ int I2C::_read(uint16_t addr, uint8_t *buffer, int size, uint32_t flags) {
 		ret = m_isr.error;
 	} else {
 		_abort();
-		ret = ERR_TIMEOUT;
+		ret = ERR_BUSY;
 	}
 	
 	return ret;
@@ -306,7 +306,7 @@ int I2C::_write(uint16_t addr, const uint8_t *buffer, int size, uint32_t flags) 
 		ret = m_isr.error;
 	} else {
 		_abort();
-		ret = ERR_TIMEOUT;
+		ret = ERR_BUSY;
 	}
 	
 	return ret;

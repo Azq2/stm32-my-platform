@@ -23,11 +23,6 @@ struct I2CMessage {
 
 class I2C {
 	protected:
-		static constexpr uint32_t MAX_STANDART_SPEED	= 100000;
-		static constexpr uint32_t MAX_FAST_SPEED		= 400000;
-		
-		static constexpr uint32_t BUSY_WAIT_TIMEOUT		= 25;
-		
 		static constexpr uint32_t I2C_ALL_ERRORS = I2C_SR1_TIMEOUT | I2C_SR1_OVR | I2C_SR1_AF | I2C_SR1_ARLO | I2C_SR1_BERR;
 		static constexpr uint32_t I2C_ALL_IRQ = I2C_CR2_ITBUFEN | I2C_CR2_ITEVTEN | I2C_CR2_ITERREN;
 		
@@ -98,6 +93,9 @@ class I2C {
 		void _stop();
 		int getTimeout(int size);
 	public:
+		static constexpr uint32_t MAX_STANDART_SPEED	= 100000;
+		static constexpr uint32_t MAX_FAST_SPEED		= 400000;
+		
 		enum {
 			ERR_SUCCESS					= 0,
 			ERR_NACK					= -1,
