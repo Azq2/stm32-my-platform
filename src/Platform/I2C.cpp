@@ -59,14 +59,18 @@ void I2C::configure() {
 	uint32_t ccr;
 	uint32_t trise;
 	
+	m_speed = std::min(MAX_FAST_SPEED, std::max(1UL, m_speed));
+	
 	if (m_speed > MAX_STANDART_SPEED) {
 		i2c_set_fast_mode(m_config->i2c);
-		ccr = std::min((uint32_t) 0xFFF, std::max((uint32_t) 0x1, (pclk / (m_speed * 3)) << 1));
-		trise = (pclk_mhz * 300 / 1000) + 1;
+		ccr = std::min(0xFFFFUL, std::max(0x1UL, pclk / (m_speed * 3)));
+		trise = (pclk_mhz * 300 / 1000) + 1; // 300ns
+		m_real_speed = pclk / (ccr * 3);
 	} else {
 		i2c_set_standard_mode(m_config->i2c);
-		ccr = std::min((uint32_t) 0xFFF, std::max((uint32_t) 0x4, (pclk / m_speed) << 1));
-		trise = pclk_mhz + 1;
+		ccr = std::min(0xFFFFUL, std::max(0x4UL, pclk / (m_speed * 2)));
+		trise = pclk_mhz + 1; // 1000ns
+		m_real_speed = pclk / (ccr * 2);
 	}
 	
 	i2c_set_ccr(m_config->i2c, ccr);
@@ -111,6 +115,14 @@ int I2C::open() {
 	return ERR_SUCCESS;
 }
 
+int I2C::getTimeout(int size) {
+	// timeout for one byte: 30 clocks
+	int one_byte_timeout = ((1000000 / m_real_speed)) * 2 * 30;
+	// use 5s static timeout for worst case (rtos lags)
+	// with additional timeout for requested size
+	return (one_byte_timeout * (size + 2)) / 1000 + 5000;
+}
+
 int I2C::waitForBtfFlag(TimeOut_t *timeout, TickType_t *ticks_to_wait) {
 	while ((I2C_SR1(m_config->i2c) & I2C_SR1_BTF)) {
 		if (xTaskCheckForTimeOut(timeout, ticks_to_wait))
@@ -129,24 +141,24 @@ int I2C::waitForBusyFlag(TimeOut_t *timeout, TickType_t *ticks_to_wait) {
 	return true;
 }
 
-bool I2C::ping(uint8_t addr, int tries, int timeout_ms) {
+bool I2C::ping(uint8_t addr, int tries) {
 	for (int i = 0; i < tries; i++) {
-		if (write(addr, nullptr, 0, timeout_ms) == ERR_SUCCESS)
+		if (write(addr, nullptr, 0) == ERR_SUCCESS)
 			return true;
 	}
 	return false;
 }
 
-int I2C::read(uint16_t addr, uint8_t *buffer, int size, int timeout_ms) {
+int I2C::read(uint16_t addr, uint8_t *buffer, int size) {
 	lock();
-	int ret = _read(addr, buffer, size, I2C_TRANSFER_SEND_START | I2C_TRANSFER_SEND_STOP, timeout_ms);
+	int ret = _read(addr, buffer, size, I2C_TRANSFER_SEND_START | I2C_TRANSFER_SEND_STOP);
 	unlock();
 	return ret;
 }
 
-int I2C::write(uint16_t addr, const uint8_t *buffer, int size, int timeout_ms) {
+int I2C::write(uint16_t addr, const uint8_t *buffer, int size) {
 	lock();
-	int ret = _write(addr, buffer, size, I2C_TRANSFER_SEND_START | I2C_TRANSFER_SEND_STOP, timeout_ms);
+	int ret = _write(addr, buffer, size, I2C_TRANSFER_SEND_START | I2C_TRANSFER_SEND_STOP);
 	unlock();
 	return ret;
 }
@@ -176,9 +188,9 @@ int I2C::transfer(uint16_t addr, I2CMessage *msgs, int count) {
 		
 		int ret;
 		if (dir) {
-			ret = _write(addr, msg->buffer, msg->size, flags, msg->timeout);
+			ret = _write(addr, msg->buffer, msg->size, flags);
 		} else {
-			ret = _read(addr, msg->buffer, msg->size, flags, msg->timeout);
+			ret = _read(addr, msg->buffer, msg->size, flags);
 		}
 		
 		last_dir = dir;
@@ -193,8 +205,8 @@ int I2C::transfer(uint16_t addr, I2CMessage *msgs, int count) {
 	return ERR_SUCCESS;
 }
 
-int I2C::_read(uint16_t addr, uint8_t *buffer, int size, uint32_t flags, int timeout_ms) {
-	TickType_t ticks_to_wait = pdMS_TO_TICKS(timeout_ms);
+int I2C::_read(uint16_t addr, uint8_t *buffer, int size, uint32_t flags) {
+	TickType_t ticks_to_wait = pdMS_TO_TICKS(getTimeout(size));
 	TimeOut_t timeout;
 	
 	vTaskSetTimeOutState(&timeout);
@@ -250,8 +262,8 @@ int I2C::_read(uint16_t addr, uint8_t *buffer, int size, uint32_t flags, int tim
 	return ret;
 }
 
-int I2C::_write(uint16_t addr, const uint8_t *buffer, int size, uint32_t flags, int timeout_ms) {
-	TickType_t ticks_to_wait = pdMS_TO_TICKS(timeout_ms);
+int I2C::_write(uint16_t addr, const uint8_t *buffer, int size, uint32_t flags) {
+	TickType_t ticks_to_wait = pdMS_TO_TICKS(getTimeout(size));
 	TimeOut_t timeout;
 	
 	vTaskSetTimeOutState(&timeout);
@@ -357,7 +369,6 @@ void I2C::handleIrqEv() {
 	BaseType_t higher_task_woken = pdFALSE;
 	uint32_t sr1 = I2C_SR1(m_config->i2c);
 	
-	//printf("handleIrqEv\r\n");
 	if ((sr1 & I2C_SR1_SB)) {
 		// Clear SB=1 by reading SR2
 		(void) I2C_SR2(m_config->i2c);

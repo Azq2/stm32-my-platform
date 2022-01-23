@@ -19,7 +19,6 @@ struct I2CMessage {
 	uint8_t *buffer = 0;
 	int size = 0;
 	uint8_t flags = 0;
-	int timeout = 60000;
 };
 
 class I2C {
@@ -93,10 +92,11 @@ class I2C {
 		int waitForBusyFlag(TimeOut_t *timeout, TickType_t *ticks_to_wait);
 		int waitForBtfFlag(TimeOut_t *timeout, TickType_t *ticks_to_wait);
 		
-		int _read(uint16_t addr, uint8_t *buffer, int size, uint32_t flags, int timeout_ms = 60000);
-		int _write(uint16_t addr, const uint8_t *buffer, int size, uint32_t flags, int timeout_ms = 60000);
+		int _read(uint16_t addr, uint8_t *buffer, int size, uint32_t flags);
+		int _write(uint16_t addr, const uint8_t *buffer, int size, uint32_t flags);
 		void _abort();
 		void _stop();
+		int getTimeout(int size);
 	public:
 		enum {
 			ERR_SUCCESS					= 0,
@@ -125,11 +125,11 @@ class I2C {
 		int open();
 		int close();
 		
-		int read(uint16_t addr, uint8_t *buffer, int size, int timeout_ms = 60000);
-		int write(uint16_t addr, const uint8_t *buffer, int size, int timeout_ms = 60000);
+		int read(uint16_t addr, uint8_t *buffer, int size);
+		int write(uint16_t addr, const uint8_t *buffer, int size);
 		int transfer(uint16_t addr, I2CMessage *msgs, int count);
 		
-		bool ping(uint8_t addr, int tries = 3, int timeout_ms = 60000);
+		bool ping(uint8_t addr, int tries = 3);
 		
 		void setSpeed(uint32_t speed);
 		
